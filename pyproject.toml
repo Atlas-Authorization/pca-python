@@ -1,0 +1,16 @@
+[project]
+name = "atlas-pca"
+version = "0.1.0"
+description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["cryptography>=41"]  # optional: native Ed25519; a pure-Python RFC 8032 verifier is the fallback
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["atlas_pca"]
