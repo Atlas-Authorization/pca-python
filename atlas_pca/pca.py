@@ -823,6 +823,52 @@ def threshold_message(p: dict) -> bytes:
     return SIG_DOMAIN + sha256(canonical_bytes_strict(body))
 
 
+SHARE_DOMAIN_PREFIX = "atlas-pca/share/"
+
+
+def share_message(role: str, thr_msg: bytes, signer_set_hash: bytes, t: int) -> bytes:
+    """v2.1 bound threshold-share message:
+    `"atlas-pca/share/<role>\\0" || sha256(thresholdMessage) || signerSetHash || t(1 byte)`."""
+    return (SHARE_DOMAIN_PREFIX + role + "\x00").encode("utf-8") + sha256(thr_msg) + signer_set_hash + bytes([t])
+
+
+def verify_threshold_share(entry: dict) -> bool:
+    """v2.1 agent-leaf threshold-share binding. Recompute the role/signerSetHash/t-bound share message
+    (`share_message`) and verify the share signature over it under the share's suite (`share.alg`, default
+    ed25519). FAIL-CLOSED: any missing/malformed field, a non-string role, an out-of-range `t`, or an invalid
+    signature -> False. The PRE-v2.1 bare agent share (signed over the bare `thresholdMessage`) and a
+    cross-signer-set replay therefore do NOT verify against the recomputed bound message, so both return False.
+    Mirrors `verify_threshold_share` in the Rust/Java reference verifiers."""
+    if not isinstance(entry, dict):
+        return False
+    role = entry.get("role")
+    t = entry.get("t")
+    share = entry.get("share")
+    # `bool` is an `int` subclass; a boolean `t` is malformed, not a byte count.
+    if not isinstance(role, str) or isinstance(t, bool) or not isinstance(t, int) or not 0 <= t <= 255:
+        return False
+    if not isinstance(share, dict):
+        return False
+    thr_msg = decode_b64u_strict(entry.get("threshold_message"))
+    ssh = decode_b64u_strict(entry.get("signer_set_hash"), 32)
+    if thr_msg is None or ssh is None:
+        return False
+    msg = share_message(role, thr_msg, ssh, t)
+    return verify_leaf_suite(share, share.get("publicKey"), msg)
+
+
+def verify_artifact_suite(artifact: dict) -> bool:
+    """Verify a post-quantum transparency/authority artifact signature over its `message` under the artifact's
+    suite (`alg`, default ed25519; Ed25519 public key in `ed_pub`, lattice/hash key in `pq_pk`). Routes through
+    the SAME suite-agile seam as the leaf. FAIL-CLOSED: unknown/unimplemented suite or malformed input -> False."""
+    if not isinstance(artifact, dict):
+        return False
+    msg = decode_b64u_strict(artifact.get("message"))
+    if msg is None:
+        return False
+    return verify_leaf_suite(artifact, artifact.get("ed_pub"), msg)
+
+
 CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter")
 
 
