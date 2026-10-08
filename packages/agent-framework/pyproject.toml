@@ -1,0 +1,17 @@
+[project]
+name = "atlas-pca-agent-framework"
+version = "0.1.0"
+description = "Microsoft Agent Framework tool guard for Atlas Proof-Carrying Authority (PCA): make every tool/function call proof-carrying and policy-gated"
+requires-python = ">=3.9"
+dependencies = ["atlas-pca>=0.1.0"]  # the reference PCActn verifier; no crypto is reimplemented here
+
+[project.optional-dependencies]
+agent-framework = ["agent-framework>=1.0"]  # optional: real AIFunction / FunctionMiddleware. The guard is duck-typed, so tests need no install.
+test = ["pytest>=7"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["atlas_pca_agent_framework"]
