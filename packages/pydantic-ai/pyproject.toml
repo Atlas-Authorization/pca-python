@@ -1,0 +1,17 @@
+[project]
+name = "atlas-pca-pydantic-ai"
+version = "0.1.0"
+description = "Proof-Carrying Authority tool guard for Pydantic AI (verify a PCActn before each tool runs)"
+requires-python = ">=3.9"
+dependencies = ["atlas-pca>=0.1"]  # the shared reference verifier; this package adds no crypto
+
+[project.optional-dependencies]
+pydantic-ai = ["pydantic-ai>=0.0.14"]  # optional: ModelRetry/RunContext/Tool; logic stays importable without it
+test = ["pytest>=7"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["atlas_pca_pydantic_ai"]

@@ -7,6 +7,9 @@ dependencies = []
 
 [project.optional-dependencies]
 fast = ["cryptography>=41"]  # optional: native Ed25519; a pure-Python RFC 8032 verifier is the fallback
+pq = ["dilithium-py>=1.0"]   # B4 post-quantum: ML-DSA-65 (FIPS-204) verification for the ml-dsa-65/hybrid suites
+fastapi = ["fastapi>=0.110"] # optional: FastAPI dependency (atlas_pca.fastapi); base stays dep-free
+django = ["django>=4.2"]     # optional: Django middleware (atlas_pca.django); base stays dep-free
 
 [build-system]
 requires = ["setuptools>=61"]
