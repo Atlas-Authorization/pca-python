@@ -1,130 +1,91 @@
-# pca-python
+# pca-python — Proof-Carrying Authority verifier for Python
 
-**The Python implementation of Proof-Carrying Authority (PCA) — an execution-authentication
-framework for autonomous agents.**
+An **offline verifier for Proof-Carrying Actions (PCActns)** in Python. A PCActn is the credential an
+autonomous agent presents with *every* action it takes: a self-contained, cryptographically-checkable
+object proving the action is a faithful execution of authority its principal actually granted. Your
+resource server verifies it locally — no token introspection, no network call on the hot path.
 
-This repo is the Python counterpart to
-[`Atlas-Authorization/pca-js`](https://github.com/Atlas-Authorization/pca-js) (the TypeScript
-ecosystem) and to [`Atlas-Authorization/pca`](https://github.com/Atlas-Authorization/pca) (the spec,
-docs, playground and the independent language verifiers). The core verifier publishes to PyPI as
-[`atlas-pca`](https://pypi.org/project/atlas-pca/); each framework adapter publishes as
-`atlas-pca-<framework>`.
-
-Classic auth answers two questions:
-
-- **authN** — *who are you?* (OIDC, passkeys)
-- **authZ** — *what may you do?* (OAuth scopes, roles)
-
-Those were enough when a human was behind every action: the human *is* the policy engine, and their
-identity implies faithfulness. An autonomous agent breaks that assumption — it is a stochastic,
-externally-steerable process whose actions are unknown at grant time and manipulable (prompt injection,
-tool-poisoning) at run time. A bearer token in a hijacked agent is full impersonation.
-
-PCA adds a third question:
-
-- **authF** — *is this specific action a faithful, uncompromised execution of an authority the principal
-  actually conferred?*
-
-PCA makes `authF` cheaply verifiable by replacing the bearer token with a **Proof-Carrying Action
-(PCActn)**: with every action the agent presents a self-contained object, and the resource server
-verifies a *proof* — not the possession of a secret. The core verifier runs **offline** with a stateless
-set of eight fail-closed checks in a fixed, normative order (wire, version, audience, validity, chain,
-plan-inclusion, leaf-signature, counter). Post-quantum (ML-DSA-65 / FIPS-204) verification is an
-additive, optional rung on top of the base wire.
-
----
+This library is the Python member of the PCA verifier family. It is a faithful port of the TypeScript
+reference implementation and passes the **same shared conformance corpus** as every other language
+verifier, so a PCActn that verifies here verifies identically everywhere.
 
 ## Install
 
-```sh
-# the core verifier (this repo's primary package, at the repo root)
-pip install atlas-pca
+The package (`atlas_pca`) is pure Python with no required dependencies. Until it is published to PyPI you
+can install it directly from the repo:
 
-# a framework adapter — pick the agent framework you run
-pip install atlas-pca-langgraph    # or atlas-pca-crewai, atlas-pca-pydantic-ai, ...
+```sh
+pip install "git+https://github.com/Atlas-Authorization/pca-python"
 ```
 
-The core verifier is dependency-free. Extras pull in optional backends only when you want them:
-`atlas-pca[fast]` (native Ed25519 via `cryptography`), `atlas-pca[pq]` (ML-DSA post-quantum),
-`atlas-pca[fastapi]`, `atlas-pca[django]`.
+Optional extras:
+
+```sh
+pip install "atlas-pca[fast]"   # native Ed25519 via `cryptography` (a pure-Python fallback ships otherwise)
+pip install "atlas-pca[pq]"     # ML-DSA-65 (FIPS-204) post-quantum verification
+```
+
+## Verify a PCActn
+
+A verifier is stateless. Give it the received PCActn (a dict, or the raw JSON string/bytes), the Root
+Intent Grant it claims to derive from, the current time (epoch **milliseconds**), and *your own* audience
+id. It returns an allow/deny verdict plus the per-check results.
 
 ```python
+import time
 from atlas_pca import verify_pcactn_core
 
-verdict = verify_pcactn_core(pcactn, grant, audience="https://api.example.com")
-if not verdict.allow:
-    raise PermissionError(f"authF failed: {verdict.reason}")
+# `raw` is the PCActn as received (strict canonical JSON, wire version 2).
+# `grant` is the Root Intent Grant the action's capability chain roots in.
+verdict = verify_pcactn_core(
+    raw,                              # str | bytes | dict
+    grant,
+    now=int(time.time() * 1000),
+    audience="https://api.example.com",
+)
+
+if verdict.allow:
+    ...  # every core check passed — execute the action
+else:
+    print("denied:", verdict.reason, verdict.checks)
 ```
 
-A framework adapter turns that verdict into a per-tool guard — every adapter exposes a `pca_tool(...)`
-wrapper (plus framework-native middleware / callbacks / nodes) so a tool call only runs when the agent
-carries a valid, in-plan, resource-correct proof for exactly that action:
+`verdict.checks` reports each core check (`wire`, `version`, `audience`, `validity`, `chain`,
+`plan_inclusion`, `leaf_signature`, `counter`). Every check is **fail-closed** — the action is allowed
+only if none reports failure — and a `wire` failure is terminal (nothing else is evaluated).
 
-```python
-from atlas_pca_langgraph import pca_tool   # same entrypoint name in every adapter
+## Conformance
 
-guarded = pca_tool(my_tool, verb="write", resource="db/orders",
-                   audience="https://api.example.com", resolve_grant=resolve_grant)
-```
+The repo ships a vendored copy of the shared **conformance corpus** (`conformance/vectors.json` +
+`conformance/keys.json`): over a hundred golden and adversarial PCActns with their expected verdicts,
+plus canonical-JSON, strict-base64url, and Merkle primitive vectors. `python test_conformance.py` runs
+the verifier against every vector; it must reproduce `allow` and every listed check exactly.
 
-See each package's own module docstrings and the [spec repo](https://github.com/Atlas-Authorization/pca)
-for the full model.
+## Supported signature suites
 
----
+- `ed25519` (default)
+- `ml-dsa-65` (FIPS-204, post-quantum — requires the `pq` extra)
+- `hybrid-ed25519-ml-dsa-65` (classical + post-quantum)
 
-## Layout
+The suite id and post-quantum public key are part of the signed body, so a suite downgrade or key swap
+invalidates the action.
 
-The **core verifier is the repo-root package** — `pip install atlas-pca` (or `pip install .` from a
-clone) installs the `atlas_pca` package that lives at the root, so the primary package needs no
-subdirectory. Each framework adapter is its own installable distribution under `packages/<framework>/`,
-with its own `pyproject.toml`; every adapter declares `atlas-pca` as a dependency and reimplements no
-crypto. The shared conformance corpus is vendored at `conformance/` so every package's tests run offline
-against the same known-good vectors.
+## Capability maturity
 
-```
-.                      atlas_pca/          -> the core verifier package  (pip install atlas-pca)
-                       pyproject.toml      -> the root (primary) package
-                       conformance/        -> vendored shared test vectors
-packages/<framework>/  atlas_pca_<fw>/     -> one framework adapter       (pip install atlas-pca-<fw>)
-                       pyproject.toml
-```
-
----
-
-## Adapters
-
-This repo bundles the core verifier plus **7** framework adapters. Each adapter builds
-on `atlas-pca` and gates one agent framework's tool calls on a verified PCActn.
-
-| Package | Install | What it does |
-|---------|---------|--------------|
-| [`atlas-pca-agent-framework`](packages/agent-framework) | `pip install atlas-pca-agent-framework` | Microsoft Agent Framework tool guard for Atlas Proof-Carrying Authority (PCA): make every tool/function call proof-carrying and policy-gated |
-| [`atlas-pca-crewai`](packages/crewai) | `pip install atlas-pca-crewai` | CrewAI tool guard for Atlas Proof-Carrying Authority (PCA): make every CrewAI tool call proof-carrying and policy-gated |
-| [`atlas-pca-fastmcp`](packages/fastmcp) | `pip install atlas-pca-fastmcp` | Per-tool Proof-Carrying Authority enforcement for FastMCP (verify a PCActn on every tools/call) |
-| [`atlas-pca-google-adk`](packages/google-adk) | `pip install atlas-pca-google-adk` | Google ADK (Gemini/Vertex Agent Development Kit) tool guard for Atlas Proof-Carrying Authority (PCA): make every ADK tool call proof-carrying and policy-gated |
-| [`atlas-pca-haystack`](packages/haystack) | `pip install atlas-pca-haystack` | Haystack (deepset) tool guard for Atlas Proof-Carrying Authority (PCA): make every Haystack tool/ToolInvoker call proof-carrying and policy-gated |
-| [`atlas-pca-langgraph`](packages/langgraph) | `pip install atlas-pca-langgraph` | LangGraph tool/node guard for Atlas Proof-Carrying Authority (PCA): make every graph tool/node call proof-carrying and policy-gated, with interrupt()-based step-up for risky nodes |
-| [`atlas-pca-pydantic-ai`](packages/pydantic-ai) | `pip install atlas-pca-pydantic-ai` | Proof-Carrying Authority tool guard for Pydantic AI (verify a PCActn before each tool runs) |
-
----
-
-## Working in this repo
-
-Everything runs offline against the vendored `conformance/` vectors — no install, no network, no agent
-framework needed (the guards are duck-typed, so the adapters' tests run without the real framework).
-
-```sh
-# core verifier
-pip install -e .
-pytest                      # runs test_conformance.py + test_server.py at the root
-
-# one adapter
-pip install -e packages/langgraph
-pytest packages/langgraph
-```
-
----
+The PCActn wire format and the eight core offline checks are stable and conformance-covered. The broader
+framework surface is implemented and tested in the reference implementation: threshold/step-up co-signing
+(a real FROST threshold signature over a DKG-established group key, released only on a Policy-VM allow),
+TEE/hardware and model-weights attestation, zero-knowledge proof-of-compliance (a real Groth16 proof),
+optimistic bonds and the contestable dispute game, and the malicious-secure MPC Policy VM (SPDZ-style MACs
+with abort). A few rungs carry a remaining production requirement, stated plainly rather than hidden
+behind a label: a live TEE/hardware attestation needs real SEV-SNP/TDX silicon (the verifier is tested
+against real-crypto mock reports); unforgeable FROST guardian custody needs each share in a separate trust
+domain / HSM with a network signing protocol (the reference runs the signing round in-process); the MPC
+Policy VM's offline triple generation is trusted-dealer today (a no-dealer OT/HE phase is designed); and
+the zero-knowledge circuit proves a decision subset (plan-membership + risk ≤ budget), with fuller
+policy coverage ongoing. See the [PCA framework repo](https://github.com/Atlas-Authorization/pca) for the
+full model.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+See `LICENSE`.
