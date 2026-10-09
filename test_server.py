@@ -12,7 +12,7 @@ import pytest
 from atlas_pca import require_pca
 from atlas_pca.pca import b64u, canonical_bytes_strict
 
-DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packages", "pca", "conformance")
+DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformance")
 
 
 def _valid_vector():

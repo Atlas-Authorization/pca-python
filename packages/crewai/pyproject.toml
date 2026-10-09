@@ -1,12 +1,12 @@
 [project]
-name = "atlas-pca"
+name = "atlas-pca-crewai"
 version = "0.3.0"
-description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
+description = "CrewAI tool guard for Atlas Proof-Carrying Authority (PCA): make every CrewAI tool call proof-carrying and policy-gated"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Atlas" }]
-keywords = ["authorization", "agents", "proof-carrying-authority", "pca", "verifier", "ed25519", "ml-dsa"]
+keywords = ["authorization", "agents", "proof-carrying-authority", "pca", "crewai"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -15,13 +15,11 @@ classifiers = [
   "Topic :: Security :: Cryptography",
 ]
 requires-python = ">=3.9"
-dependencies = []
+dependencies = ["atlas-pca>=0.3.0,<0.4"]  # the reference PCActn verifier; no crypto is reimplemented here
 
 [project.optional-dependencies]
-fast = ["cryptography>=41"]  # optional: native Ed25519; a pure-Python RFC 8032 verifier is the fallback
-pq = ["dilithium-py>=1.0"]   # B4 post-quantum: ML-DSA-65 (FIPS-204) verification for the ml-dsa-65/hybrid suites
-fastapi = ["fastapi>=0.110"] # optional: FastAPI dependency (atlas_pca.fastapi); base stays dep-free
-django = ["django>=4.2"]     # optional: Django middleware (atlas_pca.django); base stays dep-free
+test-real = ["pytest>=7", "crewai==1.15.26", "pytest-asyncio"]  # pinned framework versions the end-to-end tests are validated against (see Makefile / sdks/scripts/test-adapters-real.sh)
+crewai = ["crewai>=0.70"]  # optional: real BaseTool subclasses. The guard is duck-typed, so tests need no install.
 
 [project.urls]
 Homepage = "https://github.com/Atlas-Authorization/pca-python"
@@ -34,4 +32,4 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["atlas_pca"]
+packages = ["atlas_pca_crewai"]
