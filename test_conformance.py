@@ -1,6 +1,6 @@
 """PCA wire-format v2 conformance driver (native Python verifier).
 
-Runs the shared golden + adversarial corpus at packages/pca/conformance/vectors.json (154 v2 vectors plus the
+Runs the shared golden + adversarial corpus at packages/pca/conformance/vectors.json (172 v2 vectors plus the
 threshold-share and pq-artifact primitive tables) against the native `atlas_pca` verifier, requiring it to
 reproduce `allow` and every listed check for EVERY vector it can evaluate.
 
@@ -77,7 +77,7 @@ def _terminal_wire_false(v):
 class Conformance(unittest.TestCase):
     def test_format(self):
         self.assertEqual(DOC["format"], 2)
-        self.assertEqual(len(DOC["vectors"]), 154)
+        self.assertEqual(len(DOC["vectors"]), 172)
 
     def test_vectors(self):
         self.assertTrue(DOC["vectors"])

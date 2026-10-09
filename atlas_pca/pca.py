@@ -941,6 +941,17 @@ def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[in
             else:
                 fail("chain", why or "invalid")
 
+        # grant_ref_bound (normative): the signed grant_ref MUST be a non-empty string byte-equal to the id of the
+        # ROOT capability of the presented chain (cap_chain[0].id). Independent of the chain verdict; fail-closed
+        # on an empty / malformed chain. Replay state is keyed on grant_ref, so it must not be attacker-chosen.
+        root_cap = chain[0] if isinstance(chain, list) and chain and isinstance(chain[0], dict) else None
+        root_id = root_cap.get("id") if root_cap is not None else None
+        gref = p.get("grant_ref")
+        if isinstance(gref, str) and gref != "" and isinstance(root_id, str) and gref == root_id:
+            checks["grant_ref_bound"] = True
+        else:
+            fail("grant_ref_bound", "grant_ref is not the id of the root capability in cap_chain")
+
         plan = p["plan"]
         cond = plan["conditions_digest"] if "conditions_digest" in plan else conditions_digest()
         leaf = _plan_leaf(plan["node_id"], p["action"], cond)

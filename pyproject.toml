@@ -1,7 +1,19 @@
 [project]
 name = "atlas-pca"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Atlas" }]
+keywords = ["authorization", "agents", "proof-carrying-authority", "pca", "verifier", "ed25519", "ml-dsa"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Topic :: Security :: Cryptography",
+]
 requires-python = ">=3.9"
 dependencies = []
 
@@ -11,8 +23,14 @@ pq = ["dilithium-py>=1.0"]   # B4 post-quantum: ML-DSA-65 (FIPS-204) verificatio
 fastapi = ["fastapi>=0.110"] # optional: FastAPI dependency (atlas_pca.fastapi); base stays dep-free
 django = ["django>=4.2"]     # optional: Django middleware (atlas_pca.django); base stays dep-free
 
+[project.urls]
+Homepage = "https://github.com/Atlas-Authorization/pca-python"
+Repository = "https://github.com/Atlas-Authorization/pca-python"
+Issues = "https://github.com/Atlas-Authorization/pca-python/issues"
+Specification = "https://github.com/Atlas-Authorization/pca"
+
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
