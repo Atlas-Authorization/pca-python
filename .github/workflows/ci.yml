@@ -1,0 +1,105 @@
+name: CI
+
+# The atlas-pca verifier (repo root) + the framework adapters (packages/<framework>): unit tests and the shared
+# conformance corpus (conformance/vectors.json, run by test_conformance.py).
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verifier:
+    name: verifier (${{ matrix.os }}, py ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        include:
+          - { os: windows-latest, python: '3.12' }
+          - { os: macos-latest, python: '3.12' }
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Full adversarial corpus from the flagship
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (package + optional backends + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[fast,pq,fastapi,django]" pytest httpx
+      - name: Conformance corpus
+        run: python test_conformance.py
+      - name: Unit tests
+        run: python -m pytest -q --ignore=packages
+
+  verifier-dep-free:
+    # the base package declares no dependencies: the pure-Python fallbacks must pass on their own
+    name: verifier (no optional dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full adversarial corpus from the flagship
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest
+      - name: Conformance corpus (pure-Python Ed25519; PQ suites fail closed)
+        run: python test_conformance.py
+      - name: Unit tests
+        run: python -m pytest -q --ignore=packages
+
+  build:
+    name: build sdists + wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - name: Build every distribution
+        run: |
+          python -m build --outdir dist .
+          for p in packages/*/; do python -m build --outdir dist "$p"; done
+          ls -l dist
+
+  adapters:
+    name: adapter ${{ matrix.fw }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        fw: [agent-framework, crewai, fastmcp, google-adk, haystack, langgraph, pydantic-ai]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest pytest-asyncio
+      - name: Duck-typed suite (no framework installed)
+        working-directory: packages/${{ matrix.fw }}
+        run: python -m pytest -q --ignore-glob='test_real_*'
+      - name: Install the pinned framework (test-real extra)
+        run: python -m pip install -e . -e "packages/${{ matrix.fw }}[test-real]"
+      - name: End-to-end suite against the real framework
+        working-directory: packages/${{ matrix.fw }}
+        run: python -m pytest -q test_real_*.py

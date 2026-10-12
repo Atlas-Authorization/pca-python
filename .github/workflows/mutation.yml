@@ -1,0 +1,93 @@
+name: Mutation
+
+# Mutation testing of the verifier package (atlas_pca/, configured in setup.cfg [mutmut]) with mutmut 3, split into
+# 10 shards by the last digit of the mutant name. The merge job checks the survivors against the equivalent-mutant ledger
+# (flagship tools/pca-audit/native-check-equivalents.mjs): it passes when every survivor is a ledgered equivalent and no
+# ledger entry is stale. Runs on demand and on ci/** branches (the release-candidate check), never on main pushes.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CRATE: python-pca
+  SHARDS: '10'
+
+jobs:
+  shard:
+    name: shard ${{ matrix.shard }}/10
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Full adversarial corpus (oracle) from the flagship
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - name: Install
+        run: python -m pip install "mutmut>=3,<4" pytest cryptography dilithium-py fastapi httpx django
+      - name: Mutate
+        run: |
+          # mutmut runs the tests from mutants/: the corpus they read sits next to them
+          python - <<'PY'
+          import re
+          s = open("setup.cfg").read()
+          s = re.sub(r"(also_copy=\n)", r"\1    conformance\n", s, count=1)
+          open("setup.cfg", "w").write(s)
+          PY
+          d=$(( ${{ matrix.shard }} - 1 ))
+          echo "SHARD_RE=__mutmut_[0-9]*$d\$" >> "$GITHUB_ENV"
+          # 3 children: each loads the adversarial corpus (4 exhausted 12 GB on the build boxes)
+          timeout --signal=INT --kill-after=120 330m mutmut run --max-children 3 "*$d" > "$RUNNER_TEMP/run.log" 2>&1 || {
+            rc=$?; tail -c 3000 "$RUNNER_TEMP/run.log"; echo "::error::mutmut run exited $rc"; exit 1; }
+          tail -c 600 "$RUNNER_TEMP/run.log" | tr '\r' '\n' | tail -3
+      - name: Report
+        run: |
+          python .github/scripts/mutmut-survivors.py "$SHARD_RE"
+          node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=mutmut \
+            --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship checker + ledger
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+      - name: Merge shards and check the ledger
+        run: >
+          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports
+          --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: survivors-merged
+          path: reports/survivors-merged.json
+          if-no-files-found: ignore
