@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-10-12
+
+- Security (policy layer): caveats on the root grant outside the envelope are now evaluated like delegated caveats; new policy_caveats/evaluate_caveats helpers (incl. max_spend). The core verifier still does not evaluate caveats. `policy_caveats(grant, chain)` = the grant's caveats without its first `envelope` caveat, then the caveats the hops appended; `evaluate_caveats(caveats, ctx) -> (ok, failed)` is total. New corpus table `caveat_eval`.
+- Threshold share signatures are validated per suite in `wire`: `alg` absent = ed25519 (64-byte `sig`, no `pq_sig`), `ml-dsa-65` (3309-byte `sig`, no `pq_sig`), `hybrid-ed25519-ml-dsa-65` (64-byte `sig` + 3309-byte `pq_sig`); a non-string or unknown `alg` fails. A share's `pq_pk` stays an optional echo judged by the threshold check. Before, every share `sig` had to be 64 bytes, so a pure ML-DSA-65 share could not be carried. New helper `validate_share_signature_wire`. The conformance runner skips vectors whose `requires` names a suite this package does not implement (ml-dsa-87, slh-dsa-sha2-128f).
+- The `PCA-Action` header is decoded by the new public `decode_pca_header` (raises `PcaHeaderError`): strict unpadded base64url (no padding, standard alphabet or whitespace anywhere, nothing trimmed, canonical trailing bits) then strict UTF-8 with a leading BOM kept. The guard already decoded strictly; it now goes through this one decoder (same 401). New corpus table `pca_header`.
+
 ## 0.4.0 - 2026-10-11 (BREAKING)
 
 - Depth / strict digests (security, parity): every protocol digest (`hash_canonical`: capability / grant hash, hop body digest, caveat comparison, params and conditions digests; Merkle leaves) now uses the STRICT canonical form like the reference (`hashCanonical` is `canonicalizeStrict`): nesting depth <= 32, safe integers only, plain decimals, no lone surrogates. It was the lenient form, so a correctly SIGNED hop carrying a depth-33 value, `1e300`, `2^53+2` or a lone surrogate verified although the reference refuses the chain (and the lenient form recursed without bound). Such hops are now refused (`hop N: malformed body`). `hash_canonical` raises `TypeError` on out-of-profile input, like the reference. `verify_leaf_suite` is total.

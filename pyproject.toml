@@ -1,6 +1,6 @@
 [project]
 name = "atlas-pca"
-version = "0.4.0"
+version = "0.4.1"
 description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
 readme = "README.md"
 license = "MIT"

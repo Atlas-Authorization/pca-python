@@ -545,6 +545,23 @@ def validate_signature_wire(p: dict) -> Optional[str]:
     return None
 
 
+def validate_share_signature_wire(s: dict) -> Optional[str]:
+    """Per-suite wire check of a threshold share's `alg`/`sig`/`pq_sig` (0.4.1). Same lengths as the leaf, except that a
+    share's `pq_pk` is NOT judged here: it is an optional echo, checked against the signer set by `verify_threshold_share`."""
+    suite, err = _resolve_suite(s)
+    if suite is None:
+        return err
+    sig_bytes, _, needs_sig = _SIG_SUITES[suite]
+    if decode_b64u_strict(s.get("sig"), sig_bytes) is None:
+        return "'sig' is not canonical base64url (%d bytes) for alg '%s'" % (sig_bytes, suite)
+    if needs_sig:
+        if decode_b64u_strict(s.get("pq_sig"), ML_DSA_65_SIGNATURE_BYTES) is None:
+            return "'pq_sig' is not canonical base64url (%d bytes) for alg '%s'" % (ML_DSA_65_SIGNATURE_BYTES, suite)
+    elif "pq_sig" in s:
+        return "'pq_sig' must be absent for alg '%s'" % suite
+    return None
+
+
 def _ml_dsa65_verify_b64u(pk_b64u: Any, msg: bytes, sig_b64u: Any) -> bool:
     pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)
     sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)
@@ -1007,8 +1024,11 @@ def validate_wire_v2(p: Any) -> Optional[str]:
                     return "threshold.shares[%d] is malformed" % i
                 if decode_b64u_strict(s.get("publicKey"), 32) is None:
                     return "threshold.shares[%d].publicKey is not canonical base64url (32 bytes)" % i
-                if decode_b64u_strict(s.get("sig"), 64) is None:
-                    return "threshold.shares[%d].sig is not canonical base64url (64 bytes)" % i
+                # 0.4.1: the share signature is validated PER SUITE (it used to be a fixed 64 bytes, so a pure post-quantum
+                # share could never be carried): `alg` absent == ed25519 (64-byte `sig`, no `pq_sig`), else the suite's lengths.
+                share_err = validate_share_signature_wire(s)
+                if share_err is not None:
+                    return "threshold.shares[%d]: %s" % (i, share_err)
         return None
     except Exception as e:
         return "malformed: %s" % e
@@ -1295,3 +1315,155 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites) -> Ve
         if reason[0] is None:
             reason[0] = "malformed PCActn: %s" % e
     return Verdict(allow=all(checks.values()), checks=checks, reason=reason[0])
+
+
+# ---- policy layer: caveat evaluation (0.4.1) -----------------------------------------------------------------------
+#
+# The core verifier (verify_pcactn_core, the 9 checks) treats caveats as opaque and does NOT evaluate them. A resource
+# server that enforces a grant's caveats calls evaluate_caveats(policy_caveats(grant, chain), ctx) with its own action
+# context. 0.4.1 (security, mirrors the TypeScript policy layer): caveats placed on the ROOT grant outside the envelope
+# are evaluated exactly like the caveats delegation hops append.
+
+ENVELOPE_CAVEAT = "envelope"
+REVERSIBILITY_ORDER = ("reversible", "rate_limited", "irreversible")
+
+
+def policy_caveats(grant: Any, chain: Any) -> Any:
+    """Every caveat the policy layer evaluates for an action under `grant` delegated along `chain` (root first):
+    `grant["caveats"]` without its FIRST `envelope` caveat (order kept), then the caveats the hops appended
+    (`leaf["caveats"][len(grant["caveats"]):]`, leaf = the last chain element). A non-list `grant["caveats"]` is
+    returned as is (None when the grant is not an object); `evaluate_caveats` refuses it (fail closed). Never raises."""
+    cs = grant.get("caveats") if isinstance(grant, dict) else None
+    if not isinstance(cs, list):
+        return cs
+    root = list(cs)
+    for i, c in enumerate(root):
+        if isinstance(c, dict) and isinstance(c.get("type"), str) and c.get("type") == ENVELOPE_CAVEAT:
+            del root[i]
+            break
+    leaf = chain[-1] if isinstance(chain, list) and chain else None
+    if isinstance(leaf, dict) and isinstance(leaf.get("caveats"), list):
+        root.extend(leaf["caveats"][len(cs):])
+    return root
+
+
+def _fin(x: Any) -> Optional[float]:
+    """The value as a finite IEEE double (the reference's JSON number), or None: bools, strings, NaN, +-inf and
+    integers beyond the double range are not finite numbers."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    try:
+        f = float(x)
+    except (OverflowError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _max_spend_satisfied(cv: dict, ctx: dict) -> bool:
+    lim = _fin(cv.get("usd"))
+    if lim is None or lim < 0:
+        return False
+    action = ctx.get("action")
+    if not isinstance(action, dict):
+        return False
+    params = action.get("params")
+    if not isinstance(params, dict) or "amount" not in params:
+        return False
+    amount = _fin(params["amount"])
+    if amount is None or amount < 0:
+        return False
+    if "currency" in params:
+        cur = params["currency"]
+        if not isinstance(cur, str) or cur not in ("usd", "USD"):
+            return False
+    return amount <= lim
+
+
+def _caveat_satisfied(cv: Any, ctx: Any) -> bool:
+    if not isinstance(cv, dict) or not isinstance(ctx, dict):
+        return False
+    t = cv.get("type")
+    if t == "max_spend":
+        return _max_spend_satisfied(cv, ctx)
+    now = _fin(ctx.get("now"))
+    if now is None:
+        return False
+    if t == "expires":
+        at = _fin(cv.get("at"))
+        return at is not None and now < at
+    if t == "not_before":
+        at = _fin(cv.get("at"))
+        return at is not None and now >= at
+    if t == "rate":
+        mx, per = _fin(cv.get("max")), _fin(cv.get("per_secs"))
+        times = ctx.get("recent_action_times")
+        if mx is None or per is None or per <= 0 or not isinstance(times, list):
+            return False
+        lo = now - per * 1000
+        n = 0
+        for x in times:
+            tv = _fin(x)
+            if tv is not None and lo < tv <= now:
+                n += 1
+        return n < mx
+    if t == "max_blast_radius":
+        mx, br = _fin(cv.get("max")), _fin(ctx.get("blast_radius"))
+        return mx is not None and br is not None and br <= mx
+    if t == "reversibility_max":
+        lim, cur = cv.get("class"), ctx.get("reversibility_class")
+        if not isinstance(lim, str) or not isinstance(cur, str):
+            return False
+        if lim not in REVERSIBILITY_ORDER or cur not in REVERSIBILITY_ORDER:
+            return False
+        return REVERSIBILITY_ORDER.index(cur) <= REVERSIBILITY_ORDER.index(lim)
+    if t == "delegation_depth":
+        mx, d = _fin(cv.get("max")), _fin(ctx.get("delegation_depth"))
+        return mx is not None and d is not None and d <= mx
+    if t == "budget_alloc":
+        lim = _fin(cv.get("limit"))
+        return lim is not None and lim >= 0
+    return False  # envelope, note, resource_prefix, predicates, tool_schema, unknown: fail closed
+
+
+def evaluate_caveats(caveats: Any, ctx: Any) -> "tuple[bool, list]":
+    """Evaluate a caveat list against `ctx` = {now (ms), delegation_depth?, blast_radius?, reversibility_class?,
+    recent_action_times?, action: {verb, resource, reversibility_class, params}}. Returns (ok, failed): ok iff every
+    caveat is satisfied; `failed` lists the unsatisfied caveats' `type` (``"<malformed>"`` when it is not a string), in
+    order. A non-list => (False, ["<malformed caveats>"]). Built-in types: max_spend {usd} (needs action.params.amount,
+    currency absent or "usd"/"USD"), expires, not_before, rate, max_blast_radius, reversibility_max, delegation_depth,
+    budget_alloc; every other type is unsatisfied. Total: never raises."""
+    if not isinstance(caveats, list):
+        return False, ["<malformed caveats>"]
+    failed = []
+    for cv in caveats:
+        try:
+            ok = _caveat_satisfied(cv, ctx)
+        except Exception:
+            ok = False
+        if not ok:
+            t = cv.get("type") if isinstance(cv, dict) else None
+            failed.append(t if isinstance(t, str) else "<malformed>")
+    return not failed, failed
+
+
+# ---- the PCA-Action header (0.4.1: strict) --------------------------------------------------------------------------
+
+class PcaHeaderError(ValueError):
+    """A `PCA-Action` header value that is not strict unpadded base64url of UTF-8 text."""
+
+    code = "invalid_pca_header"
+
+
+def decode_pca_header(value: Any) -> str:
+    """`PCA-Action` header value -> the PCActn JSON text. STRICT: non-empty, unpadded RFC 4648 s5 alphabet only, no
+    whitespace anywhere (nothing is trimmed), length mod 4 != 1, zero unused trailing bits, then strict UTF-8 (invalid,
+    overlong, surrogate and truncated sequences refused; a leading BOM is kept). Raises PcaHeaderError otherwise."""
+    if not isinstance(value, str) or not value:
+        raise PcaHeaderError("PCA-Action header is empty")
+    raw = decode_b64u_strict(value)
+    if raw is None:
+        raise PcaHeaderError("PCA-Action header is not strict unpadded base64url")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PcaHeaderError("PCA-Action header does not decode to UTF-8 text") from None

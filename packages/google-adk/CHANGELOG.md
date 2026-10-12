@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 - 2026-10-12
+
+- Requires `atlas-pca>=0.4.1,<0.5`: the 0.4.1 verifier is a security release (root caveats are enforced). No API change in this adapter.
+
 ## 0.4.0 - 2026-10-11
 
 - Requires `atlas-pca>=0.4.0,<0.5` (lockstep with the 0.4.0 verifier, which is breaking: strict canonical digests with a depth cap, full signer-set validation in threshold shares, the root PQ pin, caveat and document size caps). No API change in this adapter.

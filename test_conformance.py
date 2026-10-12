@@ -59,6 +59,10 @@ def _unsupported_suite(v):
     if not isinstance(p, dict):
         return None
     req = v.get("requires")
+    # 0.4.1: a vector may name the concrete suite it needs (e.g. a pure ml-dsa-87 / slh-dsa threshold share). A
+    # suite this verifier does not implement is skipped (with its count), never silently passed.
+    if isinstance(req, str) and req not in ("pq", "pq-nonleaf"):
+        return None if req in SUPPORTED_SUITES else req
     if req == "pq":
         a = _alg(p)
         return None if a in SUPPORTED_SUITES else a
