@@ -21,6 +21,13 @@ DEFAULT_REVERSIBILITY_CLASS = "reversible"
 MAX_CHAIN_DEPTH = 16
 MAX_JSON_DEPTH = 32
 MAX_JSON_CHARS = 1 << 20
+# Shared hard caveat caps (all PCA verifiers): per-hop cumulative list, and the sum over every hop of a chain.
+MAX_CAVEATS_PER_HOP = 256
+MAX_CAVEATS_PER_CHAIN = 1024
+CAVEAT_LIMIT_REASON = "chain exceeds caveat limit (max %d per hop, %d per chain)" % (MAX_CAVEATS_PER_HOP, MAX_CAVEATS_PER_CHAIN)
+# Shared raw wire-size cap of a PCActn JSON document (UTF-8 bytes), checked before any parsing.
+MAX_ARTIFACT_BYTES = 524288
+ARTIFACT_SIZE_REASON = "artifact exceeds size limit (max %d bytes)" % MAX_ARTIFACT_BYTES
 MAX_DECIMAL_DIGITS = 15
 MAX_LIFETIME_MS = 3_600_000
 MAX_SKEW_MS = 60_000
@@ -367,13 +374,18 @@ def canonical_bytes_strict(v: Any) -> bytes:
 
 
 def hash_canonical(v: Any) -> str:
-    return b64u(sha256(canonical_bytes(v)))
+    """base64url(sha256(STRICT canonical(v))), like the reference `hashCanonical` (hash.ts canonicalBytes is
+    canonicalizeStrict): every protocol digest (capability / grant hash, hop body digest, caveat comparison, params and
+    conditions digests, Merkle leaves) is depth-capped (MAX_JSON_DEPTH), safe-integer-only and surrogate-free. Raises
+    TypeError on an out-of-profile value; the verifiers turn that into a refusal (a lenient digest would accept a
+    correctly signed out-of-profile hop that the reference refuses)."""
+    return b64u(sha256(canonical_bytes_strict(v)))
 
 
 # ---- Merkle --------------------------------------------------------------------------
 
 def _leaf_hash(leaf: Any) -> bytes:
-    return sha256(b"\x00" + canonical_bytes(leaf))
+    return sha256(b"\x00" + canonical_bytes_strict(leaf))
 
 
 def _node_hash(l: bytes, r: bytes) -> bytes:
@@ -541,8 +553,51 @@ def _ml_dsa65_verify_b64u(pk_b64u: Any, msg: bytes, sig_b64u: Any) -> bool:
     return ml_dsa65_verify(pk, msg, sg)
 
 
-def verify_leaf_suite(p: dict, holder: Any, msg: bytes) -> bool:
-    """Verify the leaf signature under the PCActn's suite. FAIL-CLOSED: unknown alg / missing / invalid -> False."""
+class _PinnedPq:
+    """An opaque PQ verification key (R3-01 choke point). Instances are minted ONLY by `_resolve_pq_key`, so the low-level
+    PQ verification (`_verify_suite`) cannot be reached with a key read straight off the artifact being verified."""
+
+    __slots__ = ("key", "source")
+    _MINT = object()
+
+    def __init__(self, key: str, source: str, token: object = None) -> None:
+        if token is not _PinnedPq._MINT:
+            raise TypeError("_PinnedPq is minted only by _resolve_pq_key")
+        object.__setattr__(self, "key", key)
+        object.__setattr__(self, "source", source)
+
+    def __setattr__(self, name, value):  # immutable
+        raise AttributeError("_PinnedPq is immutable")
+
+
+def _resolve_pq_key(identity: Any, artifact_pk: Any, *, holder_pq: Any = None, pq_pins: Any = None,
+                    trusted_pk: Any = None) -> Optional[_PinnedPq]:
+    """THE choke point (R3-01), mirroring `resolvePqVerifyKey` in packages/pca/src/pq.ts. Returns the key to verify under,
+    or None (REFUSE) when no verifier-side authority vouches for the artifact's `pq_pk`:
+      1. `trusted_pk`: a key the verifier itself holds (the stored grant). Used as is.
+      2. `pq_pins[identity]` (own entry only): the artifact's pq_pk MUST equal the pin; a differing pin is a refusal.
+      3. `holder_pq`: the artifact's pq_pk must hash to the signer's committed `holder_pq` (F-2).
+    Natives have no `allowUnboundPq`: an artifact's own key is never enough."""
+    if isinstance(trusted_pk, str) and trusted_pk != "":
+        return _PinnedPq(trusted_pk, "trusted", _PinnedPq._MINT)
+    if not isinstance(artifact_pk, str) or artifact_pk == "":
+        return None
+    if isinstance(pq_pins, dict) and isinstance(identity, str) and identity in pq_pins:
+        return _PinnedPq(artifact_pk, "pin", _PinnedPq._MINT) if pq_pins[identity] == artifact_pk else None
+    if isinstance(holder_pq, str) and holder_pq_commitment(artifact_pk) == holder_pq:
+        return _PinnedPq(artifact_pk, "holder-commitment", _PinnedPq._MINT)
+    return None
+
+
+def _ml_dsa65_verify_pinned(pq: Optional[_PinnedPq], msg: bytes, sig_b64u: Any) -> bool:
+    if not isinstance(pq, _PinnedPq):
+        return False
+    return _ml_dsa65_verify_b64u(pq.key, msg, sig_b64u)
+
+
+def _verify_suite(p: dict, holder: Any, msg: bytes, pq: Optional[_PinnedPq]) -> bool:
+    """Verify `p`'s signature(s) under its suite. The PQ half verifies ONLY under `pq` (a `_PinnedPq`), never under
+    `p["pq_pk"]`. FAIL-CLOSED: unknown alg / missing key / invalid -> False."""
     suite, _ = _resolve_suite(p)
     if suite is None:
         return False
@@ -550,10 +605,22 @@ def verify_leaf_suite(p: dict, holder: Any, msg: bytes) -> bool:
     if suite == "ed25519":
         return _verify_b64u(holder, msg, sig)
     if suite == "ml-dsa-65":
-        return _ml_dsa65_verify_b64u(p.get("pq_pk"), msg, sig)
+        return _ml_dsa65_verify_pinned(pq, msg, sig)
     if suite == "hybrid-ed25519-ml-dsa-65":
-        return _verify_b64u(holder, msg, sig) and _ml_dsa65_verify_b64u(p.get("pq_pk"), msg, p.get("pq_sig"))
+        return _verify_b64u(holder, msg, sig) and _ml_dsa65_verify_pinned(pq, msg, p.get("pq_sig"))
     return False
+
+
+def verify_leaf_suite(p: dict, holder: Any, msg: bytes) -> bool:
+    """Verify a signature under the ARTIFACT'S OWN `pq_pk`. Only for surfaces whose key is authorised elsewhere (threshold
+    shares, the `pq_artifact` conformance primitives): it proves nothing about who issued `p`. The chain and the PCActn
+    leaf never call it; they resolve their key through `_resolve_pq_key`. TOTAL: malformed input -> False."""
+    try:
+        if not isinstance(p, dict) or not isinstance(msg, (bytes, bytearray)):
+            return False
+        return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get("pq_pk"), trusted_pk=p.get("pq_pk")))
+    except Exception:  # noqa: BLE001 - totality on hostile input
+        return False
 
 
 def cap_hash(c: dict) -> str:
@@ -561,7 +628,10 @@ def cap_hash(c: dict) -> str:
 
 
 def _body_of(c: dict) -> dict:
-    return {"issuer": c.get("issuer"), "holder": c.get("holder"), "caveats": c.get("caveats"), "parent": c.get("parent")}
+    body = {"issuer": c.get("issuer"), "holder": c.get("holder"), "caveats": c.get("caveats"), "parent": c.get("parent")}
+    if "holder_pq" in c:
+        body["holder_pq"] = c["holder_pq"]
+    return body
 
 
 def _signable_hop_body(c: dict):
@@ -580,7 +650,7 @@ def _signable_hop_body(c: dict):
     return body, None
 
 
-def _check_sig(c: dict, signer: Any, label: str) -> Optional[str]:
+def _check_sig(c: dict, signer: Any, label: str, pq: Optional[_PinnedPq] = None) -> Optional[str]:
     # Unknown suite => fail-closed (before any hashing), mirroring capability.ts checkSig.
     body, err = _signable_hop_body(c)
     if body is None:
@@ -597,33 +667,160 @@ def _check_sig(c: dict, signer: Any, label: str) -> Optional[str]:
         return label + ": bad signature (not signed by expected key)"
     # Suite-agile hop verification (mirrors verifyWithSuite): ed25519 == _verify_b64u(signer, msg, sig);
     # hybrid requires BOTH the Ed25519 `sig` (under `signer`) AND the ML-DSA `pq_sig` (under `pq_pk`);
-    # pure ml-dsa-65 verifies `sig` under `pq_pk`. verify_leaf_suite dispatches on the hop's `alg`.
-    if not verify_leaf_suite(c, signer, msg):
+    # pure ml-dsa-65 verifies `sig` under `pq_pk`. The PQ key is the resolved `pq` (never the hop's own pq_pk).
+    if not _verify_suite(c, signer, msg, pq):
         return label + ": bad signature (not signed by expected key)"
     return None
 
 
-def verify_chain(chain: list, expected_root_issuer: Optional[str] = None):
-    """Returns (ok, reason)."""
+HOLDER_PQ_DOMAIN = b"atlas-pca/holder-pq/v1\0"
+
+
+def holder_pq_commitment(pq_pk: str) -> str:
+    return b64u(sha256(HOLDER_PQ_DOMAIN + pq_pk.encode("utf-8")))
+
+
+def _suite_policy_error(alg: Any, label: str, allowed) -> Optional[str]:
+    """allowedSuites policy (absent `alg` == ed25519). `allowed` None == no policy; [] refuses everything."""
+    if allowed is None:
+        return None
+    a = "ed25519" if alg is None else alg
+    if isinstance(a, str) and a in allowed:
+        return None
+    return "%s: signature suite '%s' is not allowed by this verifier's suite policy" % (label, a)
+
+
+def pq_binding_error(alg: Any, pq_pk: Any, committed: Any, label: str) -> Optional[str]:
+    """F-2: a PQ-carrying suite is accepted only under a pq_pk the signer's holder committed to (holder_pq)."""
+    a = "ed25519" if alg is None else alg
+    if not isinstance(a, str) or a not in _SIG_SUITES or not _SIG_SUITES[a][1]:
+        return None
+    if not isinstance(committed, str):
+        return "%s: suite '%s' needs a PQ key bound to the signer, but the signer's holder carries no holder_pq commitment (unbound PQ keys are rejected; F-2)" % (label, a)
+    if not isinstance(pq_pk, str) or holder_pq_commitment(pq_pk) != committed:
+        return "%s: pq_pk does not match the signer's committed holder_pq (F-2)" % label
+    return None
+
+
+def artifact_too_large(text: Union[str, bytes, bytearray]) -> bool:
+    """True when the raw PCActn document exceeds MAX_ARTIFACT_BYTES (UTF-8 bytes). O(1) for bytes and for clearly small/large strs."""
+    if isinstance(text, (bytes, bytearray)):
+        return len(text) > MAX_ARTIFACT_BYTES
+    if len(text) > MAX_ARTIFACT_BYTES:  # bytes >= chars
+        return True
+    if len(text) * 4 <= MAX_ARTIFACT_BYTES:  # bytes <= 4 * chars (surrogatepass: 3 per lone surrogate)
+        return False
+    return len(text.encode("utf-8", "surrogatepass")) > MAX_ARTIFACT_BYTES
+
+
+def caveat_limit_exceeded(chain: list) -> bool:
+    """Reads raw list sizes only, so it runs before any hashing or signature work."""
+    total = 0
+    for c in chain:
+        cv = c.get("caveats") if isinstance(c, dict) else None
+        n = len(cv) if isinstance(cv, list) else 0
+        if n > MAX_CAVEATS_PER_HOP:
+            return True
+        total += n
+        if total > MAX_CAVEATS_PER_CHAIN:
+            return True
+    return False
+
+
+ROOT_PQ_PIN_REASON = ("hop 0: root suite '%s' needs a PQ key pinned for the root issuer (policy.pqPins) or the verifier's stored grant "
+                      "(policy.trustedRoot); the root's own pq_pk proves nothing about who issued it (R3-01)")
+
+
+def _resolve_root_pq(root: dict, pq_pins: Any, trusted_root: Any):
+    """The root hop has no parent holding a `holder_pq` commitment, so a non-ed25519 root's PQ key must come from a
+    verifier-side authority: the verifier's stored copy of this very grant (`trusted_root`, same content hash) or a pin for
+    `root.issuer`. Returns (key_or_None, reason_or_None); mirrors `rootPq` in capability.ts."""
+    suite, _ = _resolve_suite(root)
+    if suite is None or not _SIG_SUITES[suite][1]:
+        return None, None
+    pk = root.get("pq_pk")
+    trusted = None
+    if trusted_root is not None and isinstance(pk, str):
+        try:
+            if cap_hash(trusted_root) == cap_hash(root):
+                trusted = pk
+        except Exception:
+            trusted = None
+    key = _resolve_pq_key(root.get("issuer"), pk, pq_pins=pq_pins, trusted_pk=trusted)
+    if key is None:
+        return None, ROOT_PQ_PIN_REASON % suite
+    return key, None
+
+
+_OPTIONAL_STR_HOP_FIELDS = ("alg", "pq_pk", "pq_sig", "holder_pq", "parent")
+
+
+def _hop_well_typed(c: Any) -> bool:
+    """Mirrors `wellTyped` in capability.ts: a hop is an object whose id/issuer/holder/body_digest/sig are strings, whose
+    optional alg/pq_pk/pq_sig/holder_pq/parent are absent or strings (JSON null is NOT absent), and whose caveats are a list
+    of objects each carrying a string `type`. A correctly SIGNED but ill-typed hop is refused like in the reference."""
+    if not isinstance(c, dict):
+        return False
+    for k in ("id", "issuer", "holder", "body_digest", "sig"):
+        if not isinstance(c.get(k), str):
+            return False
+    for k in _OPTIONAL_STR_HOP_FIELDS:
+        if k in c and not isinstance(c[k], str):
+            return False
+    cv = c.get("caveats")
+    return isinstance(cv, list) and all(isinstance(x, dict) and isinstance(x.get("type"), str) for x in cv)
+
+
+def verify_chain(chain: list, expected_root_issuer: Optional[str] = None, allowed_suites=None, pq_pins=None, trusted_root=None):
+    """Returns (ok, reason). A non-ed25519 (pure-PQ or hybrid) ROOT is accepted only if `pq_pins[root.issuer]` equals the
+    root's `pq_pk`, or `trusted_root` is the root itself (the verifier's own stored grant); otherwise it is refused (R4-01).
+    TOTAL (R6-05): a malformed chain (non-object hop, missing or wrong-typed field, ...) is a (False, reason) verdict,
+    never an exception."""
+    try:
+        return _verify_chain_unchecked(chain, expected_root_issuer, allowed_suites, pq_pins, trusted_root)
+    except Exception as e:  # noqa: BLE001 - totality: any residual fault on hostile input is a refusal
+        return False, "malformed capability chain: %s" % type(e).__name__
+
+
+def _verify_chain_unchecked(chain, expected_root_issuer, allowed_suites, pq_pins, trusted_root):
     if not isinstance(chain, list) or not chain:
         return False, "empty chain"
     if len(chain) > MAX_CHAIN_DEPTH:
         return False, "chain too long (max %d hops)" % MAX_CHAIN_DEPTH
+    if caveat_limit_exceeded(chain):
+        return False, CAVEAT_LIMIT_REASON
     root = chain[0]
+    if not _hop_well_typed(root):
+        return False, "hop 0: malformed capability"
     if "parent" in root:
         return False, "hop 0: root must not have a parent"
     if expected_root_issuer is not None and root.get("issuer") != expected_root_issuer:
         return False, "hop 0: root issuer is not the expected principal"
-    err = _check_sig(root, root.get("issuer"), "hop 0")
+    err = _suite_policy_error(root.get("alg"), "hop 0", allowed_suites)
+    if err:
+        return False, err
+    root_pq, err = _resolve_root_pq(root, pq_pins, trusted_root)
+    if err:
+        return False, err
+    err = _check_sig(root, root.get("issuer"), "hop 0", root_pq)
     if err:
         return False, err
     for i in range(1, len(chain)):
         parent, c, label = chain[i - 1], chain[i], "hop %d" % i
+        if not _hop_well_typed(c):
+            return False, label + ": malformed capability"
         if c.get("parent") != cap_hash(parent):
             return False, label + ": broken parent link"
         if c.get("issuer") != parent.get("holder"):
             return False, label + ": issuer is not the parent's bound holder"
-        err = _check_sig(c, parent.get("holder"), label)
+        err = _suite_policy_error(c.get("alg"), label, allowed_suites)
+        if err:
+            return False, err
+        err = pq_binding_error(c.get("alg"), c.get("pq_pk"), parent.get("holder_pq"), label)
+        if err:
+            return False, err
+        err = _check_sig(c, parent.get("holder"), label,
+                         _resolve_pq_key(parent.get("holder"), c.get("pq_pk"), holder_pq=parent.get("holder_pq")))
         if err:
             return False, err
         pc, cc = parent["caveats"], c["caveats"]
@@ -755,7 +952,7 @@ def validate_wire_v2(p: Any) -> Optional[str]:
         for i, c in enumerate(chain):
             if not isinstance(c, dict):
                 return "cap_chain[%d] must be an object" % i
-            k = _unknown(c, ("id", "issuer", "holder", "body_digest", "caveats", "sig", "parent", "alg", "pq_pk", "pq_sig"))
+            k = _unknown(c, ("id", "issuer", "holder", "body_digest", "caveats", "sig", "parent", "alg", "pq_pk", "pq_sig", "holder_pq"))
             if k is not None:
                 return "unknown field 'cap_chain[%d].%s'" % (i, k)
             for f in ("id", "issuer", "holder", "body_digest"):
@@ -768,6 +965,8 @@ def validate_wire_v2(p: Any) -> Optional[str]:
                 return "cap_chain[%d]: %s" % (i, hop_sig_err)
             if "parent" in c and decode_b64u_strict(c["parent"], 32) is None:
                 return "cap_chain[%d].parent is not canonical base64url (32 bytes)" % i
+            if "holder_pq" in c and decode_b64u_strict(c["holder_pq"], 32) is None:
+                return "cap_chain[%d].holder_pq is not canonical base64url (32 bytes)" % i
             cv = c.get("caveats")
             if not isinstance(cv, list) or not all(isinstance(x, dict) and _is_str(x.get("type")) for x in cv):
                 return "cap_chain[%d].caveats must be an array of {type,...} objects" % i
@@ -824,36 +1023,139 @@ def threshold_message(p: dict) -> bytes:
 
 
 SHARE_DOMAIN_PREFIX = "atlas-pca/share/"
+SIGNER_SET_DOMAIN = b"atlas-pca/signerset/v1\x00"
+SHARE_SUITE_TAG = "\x00atlas-pca/share-suite/v1\x00"
 
 
-def share_message(role: str, thr_msg: bytes, signer_set_hash: bytes, t: int) -> bytes:
+def signer_set_hash(signer_set: Any) -> Optional[bytes]:
+    """`sha256("atlas-pca/signerset/v1\\0" || canonical(sort_by(role, publicKey)[{publicKey, role[, pq_pk]}]))`.
+    `pq_pk` is carried ONLY when registered (ed25519-only sets hash byte-identically to pre-agility). None on a
+    malformed set (fail-closed)."""
+    if not isinstance(signer_set, list) or not signer_set:
+        return None
+    rows = []
+    for e in signer_set:
+        if not isinstance(e, dict) or not isinstance(e.get("role"), str) or not isinstance(e.get("publicKey"), str):
+            return None
+        row = {"publicKey": e["publicKey"], "role": e["role"]}
+        if isinstance(e.get("pq_pk"), str):
+            row["pq_pk"] = e["pq_pk"]
+        rows.append(row)
+    rows.sort(key=lambda r: (r["role"].encode("utf-8"), r["publicKey"].encode("utf-8")))
+    return sha256(SIGNER_SET_DOMAIN + canonical_bytes_strict(rows))
+
+
+def share_suite_tag(alg: Any) -> bytes:
+    """Empty for ed25519 / absent / unknown, else `SHARE_SUITE_TAG || suite` (a PQ/hybrid share cannot be stripped
+    back to ed25519, nor a classical share relabelled hybrid)."""
+    if alg is None or not isinstance(alg, str) or alg == "ed25519" or alg not in _SIG_SUITES:
+        return b""
+    return (SHARE_SUITE_TAG + alg).encode("utf-8")
+
+
+def share_message(role: str, thr_msg: bytes, signer_set_hash: bytes, t: int, alg: Any = None) -> bytes:
     """v2.1 bound threshold-share message:
-    `"atlas-pca/share/<role>\\0" || sha256(thresholdMessage) || signerSetHash || t(1 byte)`."""
-    return (SHARE_DOMAIN_PREFIX + role + "\x00").encode("utf-8") + sha256(thr_msg) + signer_set_hash + bytes([t])
+    `"atlas-pca/share/<role>\\0" || sha256(thresholdMessage) || signerSetHash || t(1 byte) [|| suite tag]`."""
+    return ((SHARE_DOMAIN_PREFIX + role + "\x00").encode("utf-8") + sha256(thr_msg) + signer_set_hash + bytes([t])
+            + share_suite_tag(alg))
 
 
-def verify_threshold_share(entry: dict) -> bool:
-    """v2.1 agent-leaf threshold-share binding. Recompute the role/signerSetHash/t-bound share message
-    (`share_message`) and verify the share signature over it under the share's suite (`share.alg`, default
-    ed25519). FAIL-CLOSED: any missing/malformed field, a non-string role, an out-of-range `t`, or an invalid
-    signature -> False. The PRE-v2.1 bare agent share (signed over the bare `thresholdMessage`) and a
-    cross-signer-set replay therefore do NOT verify against the recomputed bound message, so both return False.
-    Mirrors `verify_threshold_share` in the Rust/Java reference verifiers."""
+THRESHOLD_ROLES = frozenset(("agent", "guardian", "principal"))
+# Registered PQ public-key lengths of every suite (ml-dsa-65/87, slh-dsa-sha2-128f/256s, fn-dsa-512/1024, less-cat1): a
+# signer-set `pq_pk` must decode to one of them even when this verifier does not implement that suite (set validity
+# must agree with the reference).
+PQ_PK_LENGTHS = frozenset((1952, 2592, 32, 64, 897, 1793, 97484))
+
+
+def _signer_registry(signer_set: Any) -> Optional[dict]:
+    """Validate the WHOLE signer set exactly like the reference (`verifyThreshold` / Threshold.dfy BuildReg) and return
+    {role: (publicKey, pq_pk_or_None)}, or None if the set is malformed (R6-03): every entry is an object with a known
+    role and a canonical 32-byte base64url publicKey; a PRESENT pq_pk (JSON null is present) is canonical base64url of a
+    registered PQ key length; one key per role, one role per key; a duplicate (role, key) entry only with the same pq_pk."""
+    if not isinstance(signer_set, list):
+        return None
+    reg: dict = {}
+    roles_of_key: dict = {}
+    for e in signer_set:
+        if not isinstance(e, dict):
+            return None
+        role, pk = e.get("role"), e.get("publicKey")
+        if not isinstance(role, str) or role not in THRESHOLD_ROLES or decode_b64u_strict(pk, 32) is None:
+            return None
+        pq = None
+        if "pq_pk" in e:
+            pq = e["pq_pk"]
+            raw = decode_b64u_strict(pq) if isinstance(pq, str) else None
+            if raw is None or len(raw) not in PQ_PK_LENGTHS:
+                return None
+        if role in reg:
+            if reg[role] != (pk, pq):
+                return None  # two keys for one role, or the same key with a conflicting pq_pk
+            continue
+        if roles_of_key.get(pk, role) != role:
+            return None  # one key under two roles
+        reg[role] = (pk, pq)
+        roles_of_key[pk] = role
+    return reg
+
+
+def verify_threshold_share(entry: Any) -> bool:
+    """v2.1 threshold-share binding, SIGNER-SET PINNED (R5-A1). The signer set is `entry["signer_set"]` (the
+    verifier's own set), validated AS A WHOLE first (R6-03, `_signer_registry`); the signer-set hash is RECOMPUTED
+    from it. `t` must be 1, 2 or 3 (R6-04). The share must be for the one key the set registers for `role` (a share's
+    own `publicKey`/`pq_pk` never vouch for themselves); a role that registers a `pq_pk` needs a PQ / hybrid share
+    (R6-02), verified ONLY under the registered `pq_pk`. The signed bytes carry the share-suite tag.
+    TOTAL and FAIL-CLOSED (R6-05): any malformed input -> False, never an exception."""
+    try:
+        return _verify_threshold_share(entry)
+    except Exception:  # noqa: BLE001 - totality on hostile input
+        return False
+
+
+def _verify_threshold_share(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
     role = entry.get("role")
     t = entry.get("t")
     share = entry.get("share")
-    # `bool` is an `int` subclass; a boolean `t` is malformed, not a byte count.
-    if not isinstance(role, str) or isinstance(t, bool) or not isinstance(t, int) or not 0 <= t <= 255:
+    # `bool` is an `int` subclass; a boolean `t` is malformed. An integral float equal to 1/2/3 is accepted (JS number).
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or t not in (1, 2, 3):
         return False
-    if not isinstance(share, dict):
+    t = int(t)
+    if not isinstance(role, str) or role not in THRESHOLD_ROLES:
+        return False
+    if not isinstance(share, dict) or share.get("role") != role or not isinstance(share.get("publicKey"), str):
         return False
     thr_msg = decode_b64u_strict(entry.get("threshold_message"))
-    ssh = decode_b64u_strict(entry.get("signer_set_hash"), 32)
-    if thr_msg is None or ssh is None:
+    if thr_msg is None:
         return False
-    msg = share_message(role, thr_msg, ssh, t)
+    reg = _signer_registry(entry.get("signer_set"))
+    if reg is None or role not in reg:
+        return False
+    reg_pk, reg_pq = reg[role]
+    if share["publicKey"] != reg_pk:
+        return False
+    ssh = signer_set_hash(entry["signer_set"])
+    if ssh is None:
+        return False
+    suite = _resolve_suite(share)[0]
+    if suite is None:
+        return False
+    # A share that NAMES a pq_pk must name exactly its role's registered one (any suite; a role registering none has
+    # nothing it could equal). The key used is always the registered one.
+    if "pq_pk" in share and (reg_pq is None or share["pq_pk"] != reg_pq):
+        return False
+    if suite == "ed25519":
+        # R6-02: a role that registers a pq_pk REQUIRES a PQ (pure or hybrid) share; an ed25519-only share is refused
+        # (otherwise an Ed25519 break would still forge the role).
+        if reg_pq is not None:
+            return False
+    else:
+        # PQ key = the signer set's registered pq_pk, never the share's own
+        if reg_pq is None:
+            return False
+        share = dict(share, pq_pk=reg_pq)
+    msg = share_message(role, thr_msg, ssh, t, share.get("alg"))
     return verify_leaf_suite(share, share.get("publicKey"), msg)
 
 
@@ -880,11 +1182,21 @@ class Verdict:
 
 
 def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[int] = None,
-                       audience: Optional[str] = None) -> Verdict:
+                       audience: Optional[str] = None, allowed_suites=None) -> Verdict:
     """Verify a v2 PCActn. `p` is a parsed object OR raw JSON text/bytes (which goes through the strict profile;
     a parse failure is a `wire` failure). `audience` is this verifier's own id; omitting it fails closed.
-    `now` is epoch milliseconds (default: wall clock). Never raises."""
+    `now` is epoch milliseconds (default: wall clock). Never raises (R6-05: TOTAL on any input, including the
+    pre-wire parse of hostile bytes)."""
+    try:
+        return _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites)
+    except Exception as e:  # noqa: BLE001 - totality: a residual fault on hostile input is a wire refusal
+        return Verdict(False, {"wire": False}, "wire: malformed input (%s)" % type(e).__name__)
+
+
+def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites) -> Verdict:
     if isinstance(p, (str, bytes, bytearray)):
+        if artifact_too_large(p):  # FIRST: before any parsing
+            return Verdict(False, {"wire": False}, "wire: %s" % ARTIFACT_SIZE_REASON)
         try:
             p = strict_parse(p)
         except StrictJsonError as e:
@@ -932,10 +1244,12 @@ def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[in
             fail("chain", "empty chain")
         elif len(chain) > MAX_CHAIN_DEPTH:
             fail("chain", "chain too long (max %d hops)" % MAX_CHAIN_DEPTH)  # before any signature work
+        elif caveat_limit_exceeded(chain):
+            fail("chain", CAVEAT_LIMIT_REASON)  # before any hashing or signature work
         elif cap_hash(chain[0]) != cap_hash(grant):
             fail("chain", "chain root is not the grant")
         else:
-            ok, why = verify_chain(chain, grant.get("issuer"))
+            ok, why = verify_chain(chain, grant.get("issuer"), allowed_suites, trusted_root=grant)  # chain[0] == grant was checked above
             if ok:
                 checks["chain"] = True
             else:
@@ -960,7 +1274,14 @@ def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[in
         else:
             fail("plan_inclusion", "action is not a node of the committed plan")
 
-        if chain and verify_leaf_suite(p, chain[-1].get("holder"), threshold_message(p)):
+        leaf_err = None
+        if chain:
+            leaf_err = _suite_policy_error(p.get("alg"), "leaf", allowed_suites) or \
+                pq_binding_error(p.get("alg"), p.get("pq_pk"), chain[-1].get("holder_pq"), "leaf")
+        if leaf_err is not None:
+            fail("leaf_signature", leaf_err)
+        elif chain and _verify_suite(p, chain[-1].get("holder"), threshold_message(p),
+                                     _resolve_pq_key(chain[-1].get("holder"), p.get("pq_pk"), holder_pq=chain[-1].get("holder_pq"))):
             checks["leaf_signature"] = True
         else:
             fail("leaf_signature", "signature does not verify under the leaf holder key")

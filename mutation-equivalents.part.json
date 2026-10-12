@@ -1,0 +1,852 @@
+[
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/server.py",
+  "mutant": "_to_text: return bytes(body).decode(\"UTF-8\")",
+  "line": "return bytes(body).decode(\"utf-8\")",
+  "reason": "\"UTF-8\" and \"utf-8\" are aliases normalised by codecs.lookup to the same utf_8 codec; identical output and identical UnicodeDecodeError for every input.",
+  "occurrence": 1,
+  "lineno": 91,
+  "fn": "_to_text"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/server.py",
+  "mutant": "require_pca: grant_ref = pcactn.get(\"grant_ref\") if (isinstance(pcactn, dict)) or True else None",
+  "line": "grant_ref = pcactn.get(\"grant_ref\") if isinstance(pcactn, dict) else None",
+  "reason": "Reached only after `pcactn is None` returned early; extract_pcactn returns either (None, err) or a dict (header path checks isinstance(obj, dict), body path checks isinstance(inner, dict)), so isinstance(pcactn, dict) is always True here and forcing it True changes nothing.",
+  "occurrence": 1,
+  "lineno": 155,
+  "fn": "require_pca"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "mutant": "_recover_x: x = pow(x2, (_p + 4) // 8, _p)",
+  "line": "x = pow(x2, (_p + 3) // 8, _p)",
+  "reason": "p + 3 = 2^255 - 16 is divisible by 8, and p + 4 = 2^255 - 15 floors to the same quotient: (_p + 3) // 8 == (_p + 4) // 8 == 2^252 - 2 (checked: True), so the exponent is identical.",
+  "occurrence": 1,
+  "lineno": 26,
+  "fn": "_recover_x"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "mutant": "verify: if s > _q:",
+  "line": "if s >= _q:",
+  "reason": "Differs only at S == q exactly. Then [S]B = [q]B = identity, so acceptance needs R + [h]A == identity, i.e. R = -[H(R||A||M)]A with R, A non-small-order and torsion-free: a hash fixed point, computationally unreachable; the final equation returns False just as the S >= q guard does. (S = q + s' for a valid s' is still rejected by the same `s >= _q` comparison only when s' = 0, the same fixed point.)",
+  "occurrence": 1,
+  "lineno": 91,
+  "fn": "verify"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: text = bytes(text).decode(\"UTF-8\")  # no BOM stripping: a BOM then fails as an unexpected token",
+  "line": "text = bytes(text).decode(\"utf-8\")  # no BOM stripping: a BOM then fails as an unexpected token",
+  "reason": "\"UTF-8\" and \"utf-8\" are codec aliases for the same utf_8 codec (same output, same UnicodeDecodeError).",
+  "occurrence": 1,
+  "lineno": 92,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: if e in simple and e != \"XXXX\":",
+  "line": "if e in simple and e != \"\":",
+  "reason": "`e` is either a single character or \"\"; \"\" is not a key of `simple`, so `e in simple` already excludes it and both the original `e != \"\"` and the mutated `e != \"XXXX\"` are always True whenever `e in simple` is True.",
+  "occurrence": 1,
+  "lineno": 129,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: digits = lex.replace(\"-\", \"\").replace(\".\", \"\").lstrip(\"XX0XX\")",
+  "line": "digits = lex.replace(\"-\", \"\").replace(\".\", \"\").lstrip(\"0\")",
+  "reason": "str.lstrip takes a character SET; {'X','0'} vs {'0'} only differ on 'X', and `lex` matched _NUM so after removing '-' and '.' it contains only the digits 0-9: identical result.",
+  "occurrence": 1,
+  "lineno": 176,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: if len(absn) > 17 or int(absn) > MAX_SAFE:",
+  "line": "if len(absn) > 16 or int(absn) > MAX_SAFE:",
+  "reason": "_NUM forbids leading zeros, so a 17-digit absn is >= 10^16 > MAX_SAFE (2^53-1 ~ 9.007e15) and is rejected by the int(absn) > MAX_SAFE disjunct with the same message; the length test is only a short-circuit before int().",
+  "occurrence": 1,
+  "lineno": 184,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_utf8_key: return s.encode(\"UTF-8\", \"surrogatepass\")",
+  "line": "return s.encode(\"utf-8\", \"surrogatepass\")",
+  "reason": "\"UTF-8\" / \"utf-8\" codec aliases resolve to the same utf_8 codec; the surrogatepass handler is unchanged, so every key encodes identically.",
+  "occurrence": 1,
+  "lineno": 263,
+  "fn": "_utf8_key"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if v == 0 and math.copysign(2.0, v) < 0:",
+  "line": "if v == 0 and math.copysign(1.0, v) < 0:",
+  "reason": "copysign(2.0, v) has the same sign as copysign(1.0, v) (+-2 vs +-1), so `< 0` is True exactly for -0.0 in both.",
+  "occurrence": 1,
+  "lineno": 277,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if v == 0 and math.copysign(1.0, v) <= 0:",
+  "line": "if v == 0 and math.copysign(1.0, v) < 0:",
+  "reason": "copysign(1.0, v) is exactly +1.0 or -1.0, never 0, so `<= 0` and `< 0` agree on every float.",
+  "occurrence": 1,
+  "lineno": 277,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if v == 0 and math.copysign(1.0, v) < 1:",
+  "line": "if v == 0 and math.copysign(1.0, v) < 0:",
+  "reason": "copysign(1.0, v) is exactly +1.0 or -1.0; `< 1` and `< 0` are both True only for -1.0 (i.e. v = -0.0).",
+  "occurrence": 1,
+  "lineno": 277,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if \"XXeXX\" in s.lower():",
+  "line": "if \"e\" in s.lower():",
+  "reason": "Dead guard: s = _plain(v) for a finite v; _plain returns repr(v) only when it has no 'e'/'E' and otherwise format(Decimal(r), \"f\"), which never contains an exponent. So the original condition is always False, as is the mutated one.",
+  "occurrence": 1,
+  "lineno": 284,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if \"E\" in s.lower():",
+  "line": "if \"e\" in s.lower():",
+  "reason": "Dead guard: s = _plain(v) never contains an exponent (repr without 'e', or Decimal 'f' format), so the original is always False; \"E\" can never be in a lower()-ed string, also always False.",
+  "occurrence": 1,
+  "lineno": 284,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: if \"e\" in s.upper():",
+  "line": "if \"e\" in s.lower():",
+  "reason": "Dead guard: s = _plain(v) never contains an exponent, so the original is always False; a lowercase 'e' is never in an upper()-ed string, also always False.",
+  "occurrence": 1,
+  "lineno": 284,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: digits = s.replace(\"-\", \"\").replace(\".\", \"\").lstrip(\"XX0XX\")",
+  "line": "digits = s.replace(\"-\", \"\").replace(\".\", \"\").lstrip(\"0\")",
+  "reason": "lstrip takes a character set; s is a plain decimal (digits, '-', '.') so after removing '-' and '.' there is no 'X' to strip: identical result.",
+  "occurrence": 1,
+  "lineno": 286,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_plain: return format(Decimal(r), \"F\")",
+  "line": "return format(Decimal(r), \"f\")",
+  "reason": "For Decimal, 'F' differs from 'f' only in upper-casing NaN/Infinity; this branch is reached only when repr(v) contains 'e', which is a finite float, so the output is identical.",
+  "occurrence": 1,
+  "lineno": 296,
+  "fn": "_plain"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_plain: if \"e\" in r or \"XXEXX\" in r:",
+  "line": "if \"e\" in r or \"E\" in r:",
+  "reason": "r = repr(float) uses a lowercase 'e' exponent and never contains 'E' (inf/nan repr as 'inf'/'nan'), so the second disjunct is always False in both versions.",
+  "occurrence": 1,
+  "lineno": 295,
+  "fn": "_plain"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_plain: if \"e\" in r or \"e\" in r:",
+  "line": "if \"e\" in r or \"E\" in r:",
+  "reason": "repr(float) never contains 'E', so `\"E\" in r` is always False; the mutated disjunct duplicates the first one: same truth value for every float.",
+  "occurrence": 1,
+  "lineno": 295,
+  "fn": "_plain"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "canonicalize: return _ser(v, False, 2)",
+  "line": "return _ser(v, False, 1)",
+  "reason": "In _ser, `depth` is only read by `if strict and depth > MAX_JSON_DEPTH`; with strict=False the depth value never influences the result (it is only threaded to recursive calls with strict=False).",
+  "occurrence": 1,
+  "lineno": 360,
+  "fn": "canonicalize"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "canonical_bytes: return canonicalize(v).encode(\"UTF-8\", \"surrogatepass\")",
+  "line": "return canonicalize(v).encode(\"utf-8\", \"surrogatepass\")",
+  "reason": "\"UTF-8\" / \"utf-8\" codec aliases resolve to the same utf_8 codec; the surrogatepass handler is unchanged.",
+  "occurrence": 1,
+  "lineno": 369,
+  "fn": "canonical_bytes"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "canonical_bytes_strict: return canonicalize_strict(v).encode(\"UTF-8\")",
+  "line": "return canonicalize_strict(v).encode(\"utf-8\")",
+  "reason": "\"UTF-8\" / \"utf-8\" codec aliases resolve to the same utf_8 codec (and canonicalize_strict already refuses lone surrogates, so no error path differs either).",
+  "occurrence": 1,
+  "lineno": 373,
+  "fn": "canonical_bytes_strict"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_is_safe_int: if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(2.0, v) < 0):",
+  "line": "if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(1.0, v) < 0):",
+  "reason": "copysign(2.0, v) has the same sign as copysign(1.0, v), so `< 0` is True exactly for -0.0 in both.",
+  "occurrence": 1,
+  "lineno": 435,
+  "fn": "_is_safe_int"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_is_safe_int: if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(1.0, v) <= 0):",
+  "line": "if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(1.0, v) < 0):",
+  "reason": "copysign(1.0, v) is exactly +1.0 or -1.0, never 0, so `<= 0` and `< 0` agree.",
+  "occurrence": 1,
+  "lineno": 435,
+  "fn": "_is_safe_int"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_is_safe_int: if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(1.0, v) < 1):",
+  "line": "if not (math.isfinite(v) and v == math.trunc(v)) or (v == 0 and math.copysign(1.0, v) < 0):",
+  "reason": "copysign(1.0, v) is exactly +1.0 or -1.0; `< 1` and `< 0` are both True only for -1.0 (v = -0.0).",
+  "occurrence": 1,
+  "lineno": 435,
+  "fn": "_is_safe_int"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "artifact_too_large: if len(text) * 5 <= MAX_ARTIFACT_BYTES:  # bytes <= 4 * chars (surrogatepass: 3 per lone surrogate)",
+  "line": "if len(text) * 4 <= MAX_ARTIFACT_BYTES:  # bytes <= 4 * chars (surrogatepass: 3 per lone surrogate)",
+  "reason": "The shortcut is a sound O(1) under-approximation: when it is skipped the exact surrogatepass byte count is computed. For MAX/5 < len <= MAX/4 the exact count is <= 4*len <= MAX, so the exact path also returns False: same result, only slower.",
+  "occurrence": 1,
+  "lineno": 711,
+  "fn": "artifact_too_large"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "artifact_too_large: if len(text) * 4 < MAX_ARTIFACT_BYTES:  # bytes <= 4 * chars (surrogatepass: 3 per lone surrogate)",
+  "line": "if len(text) * 4 <= MAX_ARTIFACT_BYTES:  # bytes <= 4 * chars (surrogatepass: 3 per lone surrogate)",
+  "reason": "Only len*4 == MAX differs: the mutant falls through to the exact surrogatepass byte count, which is <= 4*len == MAX (at most 4 bytes per code point, 3 per lone surrogate), so it also returns False.",
+  "occurrence": 1,
+  "lineno": 711,
+  "fn": "artifact_too_large"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "b64u: return base64.urlsafe_b64encode(b).rstrip(b\"=\").decode(\"ASCII\")",
+  "line": "return base64.urlsafe_b64encode(b).rstrip(b\"=\").decode(\"ascii\")",
+  "reason": "\"ASCII\" and \"ascii\" are codec aliases for the same ascii codec; the input is always base64 alphabet bytes.",
+  "occurrence": 1,
+  "lineno": 42,
+  "fn": "b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "decode_b64u_strict: raw = base64.urlsafe_b64decode(s + \"=\" * (+len(s) % 4))",
+  "line": "raw = base64.urlsafe_b64decode(s + \"=\" * (-len(s) % 4))",
+  "reason": "len%4 == 1 is rejected earlier; for len%4 in {0, 2} both pad 0 / 2 '='. For len%4 == 3 the mutant pads '===' instead of '=', and the non-strict binascii decoder ignores excess padding (checked on the job box, Python 3.12: urlsafe_b64decode('YWI===') == urlsafe_b64decode('YWI=') == b'ab'); the canonical re-encode check is unchanged.",
+  "occurrence": 1,
+  "lineno": 53,
+  "fn": "decode_b64u_strict"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_b64u: pk, sg = decode_b64u_strict(pub, ), decode_b64u_strict(sig, 64)",
+  "line": "pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, 64)",
+  "reason": "Dropping the 32-byte length only lets a canonical b64u key of another length reach ed25519.verify, whose first statement returns False when len(pub) != 32. The strict decode (alphabet, padding, trailing bits) is unchanged, so the result is the same for every input.",
+  "occurrence": 1,
+  "lineno": 497,
+  "fn": "_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_b64u: pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, None)",
+  "line": "pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, 64)",
+  "reason": "length=None skips only the size check. A signature of another size then reaches ed25519.verify, which returns False when len(sig) != 64, so the verdict is identical for every input.",
+  "occurrence": 1,
+  "lineno": 497,
+  "fn": "_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ml_dsa65_verify_b64u: pk = decode_b64u_strict(pk_b64u, )",
+  "line": "pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)",
+  "reason": "Without the length a key of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(pk) != 1952 (mldsa.py), so the result is the same for every input.",
+  "occurrence": 1,
+  "lineno": 549,
+  "fn": "_ml_dsa65_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ml_dsa65_verify_b64u: sg = decode_b64u_strict(sig_b64u, None)",
+  "line": "sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)",
+  "reason": "Without the length a signature of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when len(sig) != 3309, so the result is the same for every input.",
+  "occurrence": 1,
+  "lineno": 550,
+  "fn": "_ml_dsa65_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_suite: return True (final fall-through after the three suite branches)",
+  "line": "return False",
+  "reason": "This is the last line of _verify_suite and cannot be reached. _resolve_suite returns either None (handled by the first branch) or a key of _SIG_SUITES, which holds exactly three suites: ed25519, ml-dsa-65 and hybrid-ed25519-ml-dsa-65. Each of them returns before this line.",
+  "occurrence": 14,
+  "lineno": 611,
+  "fn": "_verify_suite"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "verify_leaf_suite: return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, None, trusted_pk=p.get(\"pq_pk\")))",
+  "line": "return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"pq_pk\"), trusted_pk=p.get(\"pq_pk\")))",
+  "reason": "trusted_pk receives the same value p.get('pq_pk'). When it is a non-empty str, _resolve_pq_key returns at its first branch before artifact_pk is read. Otherwise artifact_pk (the same value, or None) also fails the 'not str or empty' check and the result is None. The result is identical.",
+  "occurrence": 1,
+  "lineno": 621,
+  "fn": "verify_leaf_suite"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "verify_leaf_suite: return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(None), trusted_pk=p.get(\"pq_pk\")))",
+  "line": "return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"pq_pk\"), trusted_pk=p.get(\"pq_pk\")))",
+  "reason": "trusted_pk == p.get('pq_pk') decides first, as in the sibling mutant. When it is not a non-empty str, the call passes identity=None and no pq_pins or holder_pq. With those arguments no branch after the empty-key check can mint a key, so the result is None whatever p.get(None) returns.",
+  "occurrence": 1,
+  "lineno": 621,
+  "fn": "verify_leaf_suite"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "holder_pq_commitment: return b64u(sha256(HOLDER_PQ_DOMAIN + pq_pk.encode(\"UTF-8\")))",
+  "line": "return b64u(sha256(HOLDER_PQ_DOMAIN + pq_pk.encode(\"utf-8\")))",
+  "reason": "Python resolves codec names case-insensitively, and 'UTF-8' and 'utf-8' are the same codec with byte-identical output, including the same strict error on lone surrogates.",
+  "occurrence": 1,
+  "lineno": 680,
+  "fn": "holder_pq_commitment"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "pq_binding_error: a = \"XXed25519XX\" if alg is None else alg",
+  "line": "a = \"ed25519\" if alg is None else alg",
+  "reason": "When alg is None, the original 'ed25519' is in _SIG_SUITES with needs_pk False, and the mutant 'XXed25519XX' is not in _SIG_SUITES. Both make the guard return None, and the message that interpolates `a` is never reached.",
+  "occurrence": 2,
+  "lineno": 695,
+  "fn": "pq_binding_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "pq_binding_error: a = \"ED25519\" if alg is None else alg",
+  "line": "a = \"ed25519\" if alg is None else alg",
+  "reason": "'ED25519' is not a key of _SIG_SUITES, so the guard returns None. That matches the original, where 'ed25519' returns None because needs_pk is False. No other use of `a` is reached.",
+  "occurrence": 2,
+  "lineno": 695,
+  "fn": "pq_binding_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "signer_set_hash: rows.sort(key=lambda r: (r[\"role\"].encode(\"utf-8\"), r[\"publicKey\"].encode(\"UTF-8\")))",
+  "line": "rows.sort(key=lambda r: (r[\"role\"].encode(\"utf-8\"), r[\"publicKey\"].encode(\"utf-8\")))",
+  "reason": "'UTF-8' and 'utf-8' name the same codec (Python looks codecs up case-insensitively), so the sort keys and the order are identical.",
+  "occurrence": 1,
+  "lineno": 1044,
+  "fn": "signer_set_hash"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "share_suite_tag: return (SHARE_SUITE_TAG + alg).encode(\"UTF-8\")",
+  "line": "return (SHARE_SUITE_TAG + alg).encode(\"utf-8\")",
+  "reason": "'UTF-8' and 'utf-8' are the same codec, so the encoded tag bytes are identical for every alg.",
+  "occurrence": 1,
+  "lineno": 1053,
+  "fn": "share_suite_tag"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_signer_registry: roles_of_key[pk] = None",
+  "line": "roles_of_key[pk] = role",
+  "reason": "roles_of_key is read only by `roles_of_key.get(pk, role) != role`, and that line runs only when `role not in reg`. If pk was seen before, it was registered under some role0, and role0 is in reg, so role0 != role. The original then compares role0 != role (True) and the mutant compares None != role (True), and both refuse. If pk was not seen, both return the default role and pass. Same outcome on every input.",
+  "occurrence": 1,
+  "lineno": 1098,
+  "fn": "_signer_registry"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_threshold_share: if not isinstance(role, str) and role not in THRESHOLD_ROLES:",
+  "line": "if not isinstance(role, str) or role not in THRESHOLD_ROLES:",
+  "reason": "Every role that only the original refuses still ends in False under the mutant. A str role outside THRESHOLD_ROLES can never be a key of the registry (_signer_registry only admits THRESHOLD_ROLES), so `role not in reg` returns False. A hashable non-str role is refused by the mutant's own condition. An unhashable role raises TypeError on `in frozenset`, which the verify_threshold_share wrapper turns into False.",
+  "occurrence": 1,
+  "lineno": 1125,
+  "fn": "_verify_threshold_share"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_threshold_share: return True (the `if ssh is None:` branch)",
+  "line": "return False",
+  "reason": "The branch cannot be reached. To get there, _signer_registry must have accepted the whole set and registered `role`. That means signer_set is a non-empty list of dicts whose role is a str in THRESHOLD_ROLES, whose publicKey is canonical b64u (a str), and whose pq_pk, if present, is a canonical b64u str. Those are exactly the conditions under which signer_set_hash returns bytes; canonical_bytes_strict cannot fail on rows that contain only such strings.",
+  "occurrence": 30,
+  "lineno": 1140,
+  "fn": "_verify_threshold_share"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: fail(\"chain\", why or \"XXinvalidXX\")",
+  "line": "fail(\"chain\", why or \"invalid\")",
+  "reason": "verify_chain never returns ok=False with an empty or None reason. Every refusal in _verify_chain_unchecked returns a non-empty literal or a reason from _suite_policy_error, pq_binding_error, _resolve_root_pq or _check_sig, all non-empty, and the totality wrapper returns 'malformed capability chain: <type>'. So the `or` fallback is never used.",
+  "occurrence": 1,
+  "lineno": 1256,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: fail(\"chain\", why or \"INVALID\")",
+  "line": "fail(\"chain\", why or \"invalid\")",
+  "reason": "Same as the XXinvalidXX variant: a False verdict from verify_chain always carries a non-empty reason, so the fallback literal is dead.",
+  "occurrence": 1,
+  "lineno": 1256,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: leaf_err = \"\"",
+  "line": "leaf_err = None",
+  "reason": "leaf_err keeps its initial value only when cap_chain is empty. In that case the chain step has already called fail('chain', 'empty chain'), which set reason[0]. The leaf_signature check is False under both versions: the mutant's `\"\" is not None` path fails it, and the original's `elif chain and ...` path fails it. Because fail() keeps the first reason, both the check map and the reason are identical.",
+  "occurrence": 1,
+  "lineno": 1277,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(None, p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
+  "reason": "_resolve_pq_key reads `identity` only on the pq_pins branch (`isinstance(pq_pins, dict) and ... identity in pq_pins`). This call site never passes pq_pins, so identity has no effect. The TS reference also resolves the leaf key only from holder_pq.",
+  "occurrence": 1,
+  "lineno": 1284,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"XXholderXX\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
+  "reason": "Same as the identity=None variant: identity is consulted only together with pq_pins, and this call never passes pq_pins.",
+  "occurrence": 1,
+  "lineno": 1284,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"HOLDER\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
+  "reason": "Same as the identity=None variant: identity is consulted only together with pq_pins, and this call never passes pq_pins.",
+  "occurrence": 1,
+  "lineno": 1284,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(None), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
+  "reason": "Non-root hops resolve their PQ key from the parent's holder_pq commitment only, and this call passes no pq_pins (capability.ts:684 likewise passes only holderPq). `identity` is read only on the pq_pins branch, so its value has no effect.",
+  "occurrence": 1,
+  "lineno": 823,
+  "fn": "_verify_chain_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"XXholderXX\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
+  "reason": "identity is read only together with pq_pins, and this call never passes pq_pins (see the identity=None variant).",
+  "occurrence": 1,
+  "lineno": 823,
+  "fn": "_verify_chain_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"HOLDER\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
+  "reason": "identity is read only together with pq_pins, and this call never passes pq_pins (see the identity=None variant).",
+  "occurrence": 1,
+  "lineno": 823,
+  "fn": "_verify_chain_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_resolve_root_pq: trusted = \"\"",
+  "line": "trusted = None",
+  "reason": "`trusted` is used only as _resolve_pq_key(..., trusted_pk=trusted), whose first branch requires `isinstance(trusted_pk, str) and trusted_pk != \"\"`. Both '' and None fail that test and fall through to the same pin lookup, so the result is identical (this holds for either `trusted = None` line).",
+  "occurrence": 1,
+  "lineno": 742,
+  "fn": "_resolve_root_pq"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "decode_b64u_strict: if not isinstance(s, str) or not s.isascii() or _B64U_ALPHABET.fullmatch(s) is None and len(s) % 4 == 1:",
+  "line": "if not isinstance(s, str) or not s.isascii() or _B64U_ALPHABET.fullmatch(s) is None or len(s) % 4 == 1:",
+  "reason": "The early guard is redundant with later checks: a string with a non-alphabet character can never equal b64u(raw) (b64u output is alphabet-only), so the canonical re-encode check returns None; an alphabet-only string with len % 4 == 1 is padded with '===' and urlsafe_b64decode raises binascii.Error (1 data char past a multiple of 4), caught -> None. Every input the mutant lets through is still refused.",
+  "occurrence": 1,
+  "lineno": 48,
+  "fn": "decode_b64u_strict"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "decode_b64u_strict: if not isinstance(s, str) or not s.isascii() and _B64U_ALPHABET.fullmatch(s) is None or len(s) % 4 == 1:",
+  "line": "if not isinstance(s, str) or not s.isascii() or _B64U_ALPHABET.fullmatch(s) is None or len(s) % 4 == 1:",
+  "reason": "Non-ASCII strings never fullmatch the ASCII-only class, so `not isascii and fullmatch is None` is True for them exactly as `not isascii` is; ASCII strings with a non-alphabet character now reach the decoder but can never equal b64u(raw) (alphabet-only), so the canonical re-encode check refuses them: same None result for every input.",
+  "occurrence": 1,
+  "lineno": 48,
+  "fn": "decode_b64u_strict"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: e = text[i] if i < n else \"XXXX\"",
+  "line": "e = text[i] if i < n else \"\"",
+  "reason": "At end of input `e` is only tested by `e in simple` and `e == \"u\"`; neither \"\" nor \"XXXX\" is a key of `simple` nor \"u\", so both fall to the same `unknown escape` error at the same offset.",
+  "occurrence": 1,
+  "lineno": 127,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: c = text[pos[0]] if pos[0] < n else \"XXXX\"",
+  "line": "c = text[pos[0]] if pos[0] < n else \"\"",
+  "reason": "Object loop: at end of input `c` is only compared with \",\" and \"}\"; neither \"\" nor \"XXXX\" matches, so both raise the same 'expected \",\" or \"}\"' error at the same offset.",
+  "occurrence": 1,
+  "lineno": 215,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_parse: c = text[pos[0]] if pos[0] < n else \"XXXX\" (variant 2)",
+  "line": "c = text[pos[0]] if pos[0] < n else \"\"",
+  "reason": "Array loop: at end of input `c` is only compared with \",\" and \"]\"; neither \"\" nor \"XXXX\" matches, so both raise the same 'expected \",\" or \"]\"' error at the same offset.",
+  "occurrence": 2,
+  "lineno": 235,
+  "fn": "strict_parse"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: return \"XXnon-integer number needs an exponent formXX\"",
+  "line": "return \"non-integer number needs an exponent form\"",
+  "reason": "Unreachable return: guarded by `\"e\" in s.lower()` with s = _plain(v) for a finite v, and _plain never yields an exponent (repr without 'e'/'E', otherwise Decimal 'f' format), so the message can never be produced.",
+  "occurrence": 1,
+  "lineno": 285,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "strict_number_error: return \"NON-INTEGER NUMBER NEEDS AN EXPONENT FORM\"",
+  "line": "return \"non-integer number needs an exponent form\"",
+  "reason": "Unreachable return: guarded by `\"e\" in s.lower()` with s = _plain(v), which never contains an exponent, so the message can never be produced.",
+  "occurrence": 1,
+  "lineno": 285,
+  "fn": "strict_number_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_num: if v == math.trunc(v) and abs(v) <= 1e21:",
+  "line": "if v == math.trunc(v) and abs(v) < 1e21:",
+  "reason": "Differs only at |v| == 1e21, which is exactly 10^21 as a double (5^21 < 2^53); str(int(1e21)) and _plain(1e21) (Decimal 'f' of '1e+21') both give \"1000000000000000000000\" (and the '-' form for -1e21).",
+  "occurrence": 1,
+  "lineno": 311,
+  "fn": "_num"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_num: if v == math.trunc(v) and abs(v) < 1e+21:",
+  "line": "if v == math.trunc(v) and abs(v) < 1e21:",
+  "reason": "1e+21 and 1e21 are the same float literal.",
+  "occurrence": 1,
+  "lineno": 311,
+  "fn": "_num"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ser: keys = sorted(v.keys(), key=None)",
+  "line": "keys = sorted(v.keys(), key=_utf8_key)",
+  "reason": "Python str ordering is by code point, and UTF-8 (including surrogatepass's 3-byte encoding of U+D800..U+DFFF) is order-preserving: bytewise comparison of the encodings equals code-point comparison; dict keys are distinct, so the sorted order is identical.",
+  "occurrence": 1,
+  "lineno": 352,
+  "fn": "_ser"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ser: keys = sorted(v.keys(), )",
+  "line": "keys = sorted(v.keys(), key=_utf8_key)",
+  "reason": "Default str ordering is by code point, which equals the bytewise order of the UTF-8/surrogatepass encodings (UTF-8 is order-preserving); dict keys are distinct, so the order is identical.",
+  "occurrence": 1,
+  "lineno": 352,
+  "fn": "_ser"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "canonicalize: return _ser(v, None, 1)",
+  "line": "return _ser(v, False, 1)",
+  "reason": "`strict` is only used in truthiness tests (`if strict and ...`, `_str(k, strict)` -> `if strict and _has_surrogate`, `_num` -> `if strict:`); None and False are both falsy.",
+  "occurrence": 1,
+  "lineno": 360,
+  "fn": "canonicalize"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "share_message: return ((SHARE_DOMAIN_PREFIX + role + \"\\x00\").encode(\"UTF-8\") + sha256(thr_msg) + signer_set_hash + bytes([t])",
+  "line": "return ((SHARE_DOMAIN_PREFIX + role + \"\\x00\").encode(\"utf-8\") + sha256(thr_msg) + signer_set_hash + bytes([t])",
+  "reason": "\"UTF-8\" and \"utf-8\" are codec aliases for the same utf_8 codec: identical bytes and identical errors.",
+  "occurrence": 1,
+  "lineno": 1059,
+  "fn": "share_message"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/fastapi.py",
+  "mutant": "RequirePCA: body = \"\"",
+  "line": "body = None",
+  "reason": "The guard passes body to server._to_text, which returns None for both None and the empty str (`return body if body else None`), so extract_pcactn/require_pca see exactly the same input.",
+  "occurrence": 1,
+  "lineno": 57,
+  "fn": "RequirePCA"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/django.py",
+  "mutant": "PCAMiddleware.__call__: body = \"\"",
+  "line": "body = None",
+  "reason": "The guard passes body to server._to_text, which returns None for both None and the empty str (`return body if body else None`), so the outcome is identical.",
+  "occurrence": 1,
+  "lineno": 76,
+  "fn": "PCAMiddleware.__call__"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_b64u: pk, sg = decode_b64u_strict(pub, None), decode_b64u_strict(sig, 64)",
+  "line": "pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, 64)",
+  "reason": "length=None skips only the size check, so a canonical key of another length reaches ed25519.verify. That function returns False when len(pub) != 32, so the result is the same for every input.",
+  "occurrence": 1,
+  "lineno": 497,
+  "fn": "_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_b64u: pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, )",
+  "line": "pk, sg = decode_b64u_strict(pub, 32), decode_b64u_strict(sig, 64)",
+  "reason": "Dropping the length argument skips only the size check. A signature of another size reaches ed25519.verify, which returns False when len(sig) != 64, so the result is the same for every input.",
+  "occurrence": 1,
+  "lineno": 497,
+  "fn": "_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_b64u: if pk is None and sg is None:",
+  "line": "if pk is None or sg is None:",
+  "reason": "If exactly one of the two is None, the mutant passes it to ed25519.verify. That call fails on len(None) with a TypeError inside its own try/except and returns False. The original returns False directly, so the result is the same.",
+  "occurrence": 1,
+  "lineno": 498,
+  "fn": "_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ml_dsa65_verify_b64u: pk = decode_b64u_strict(pk_b64u, None)",
+  "line": "pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)",
+  "reason": "Without the length a key of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(pk) != 1952, so the result is the same.",
+  "occurrence": 1,
+  "lineno": 549,
+  "fn": "_ml_dsa65_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_ml_dsa65_verify_b64u: sg = decode_b64u_strict(sig_b64u, )",
+  "line": "sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)",
+  "reason": "Without the length a signature of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(sig) != 3309, so the result is the same.",
+  "occurrence": 1,
+  "lineno": 550,
+  "fn": "_ml_dsa65_verify_b64u"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "verify_leaf_suite: return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"XXpq_pkXX\"), trusted_pk=p.get(\"pq_pk\")))",
+  "line": "return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"pq_pk\"), trusted_pk=p.get(\"pq_pk\")))",
+  "reason": "trusted_pk receives p.get('pq_pk') and decides first: a non-empty str returns before artifact_pk is read. Otherwise the call carries identity=None and no pq_pins or holder_pq, so no branch after the empty-key check can mint a key and the result is None whatever artifact_pk is.",
+  "occurrence": 1,
+  "lineno": 621,
+  "fn": "verify_leaf_suite"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "verify_leaf_suite: return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"PQ_PK\"), trusted_pk=p.get(\"pq_pk\")))",
+  "line": "return _verify_suite(p, holder, bytes(msg), _resolve_pq_key(None, p.get(\"pq_pk\"), trusted_pk=p.get(\"pq_pk\")))",
+  "reason": "Same as the XXpq_pkXX variant. trusted_pk decides first, and without pins or holder_pq the artifact_pk argument cannot mint a key.",
+  "occurrence": 1,
+  "lineno": 621,
+  "fn": "verify_leaf_suite"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "pq_binding_error: a = \"ed25519\" if (alg is None) and False else alg",
+  "line": "a = \"ed25519\" if alg is None else alg",
+  "reason": "The only change is that alg=None now gives a=None instead of 'ed25519'. None fails `isinstance(a, str)` and 'ed25519' has needs_pk False, so both return None at the first guard, and `a` is never used afterwards.",
+  "occurrence": 2,
+  "lineno": 695,
+  "fn": "pq_binding_error"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_resolve_root_pq: trusted = \"\" (variant 2)",
+  "line": "trusted = None",
+  "reason": "This is the other `trusted = None` line in _resolve_root_pq. `trusted` is used only as trusted_pk, and _resolve_pq_key's first branch requires a non-empty str. '' and None both fall through to the same pin lookup.",
+  "occurrence": 2,
+  "lineno": 748,
+  "fn": "_resolve_root_pq"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_resolve_root_pq: if trusted_root is not None or isinstance(pk, str):",
+  "line": "if trusted_root is not None and isinstance(pk, str):",
+  "reason": "Two extra cases now enter the block. (a) trusted_root is None and pk is a str: cap_hash(None) hashes 'null', which never equals the hash of a dict root, so trusted stays None. (b) trusted_root is set and pk is not a str: at most trusted = pk (non-str), and _resolve_pq_key's first branch requires a str, so it behaves like None. A hashing exception is caught and sets trusted = None. The result is identical.",
+  "occurrence": 1,
+  "lineno": 743,
+  "fn": "_resolve_root_pq"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(None, c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
+  "reason": "identity is read only on the pq_pins branch, and this hop call never passes pq_pins (capability.ts:684 likewise passes only holderPq). Its value has no effect.",
+  "occurrence": 1,
+  "lineno": 823,
+  "fn": "_verify_chain_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "signer_set_hash: rows.sort(key=lambda r: (r[\"role\"].encode(\"UTF-8\"), r[\"publicKey\"].encode(\"utf-8\")))",
+  "line": "rows.sort(key=lambda r: (r[\"role\"].encode(\"utf-8\"), r[\"publicKey\"].encode(\"utf-8\")))",
+  "reason": "'UTF-8' and 'utf-8' are the same codec (Python looks codec names up case-insensitively), so the sort keys and the order are identical.",
+  "occurrence": 1,
+  "lineno": 1044,
+  "fn": "signer_set_hash"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_signer_registry: raw = decode_b64u_strict(pq) if (isinstance(pq, str)) or True else None",
+  "line": "raw = decode_b64u_strict(pq) if isinstance(pq, str) else None",
+  "reason": "The only new case is a non-str pq, which now goes through decode_b64u_strict. Its first check returns None for any non-str input, so raw is None exactly as in the original and the set is refused the same way.",
+  "occurrence": 1,
+  "lineno": 1088,
+  "fn": "_signer_registry"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_threshold_share: if reg is None and role not in reg:",
+  "line": "if reg is None or role not in reg:",
+  "reason": "Both cases that only the original refuses still end in False. If reg is None, the mutant evaluates `role not in None`, which raises TypeError, and the verify_threshold_share wrapper returns False. If role is not in reg, the mutant continues to `reg[role]`, which raises KeyError, and the wrapper returns False.",
+  "occurrence": 1,
+  "lineno": 1133,
+  "fn": "_verify_threshold_share"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: if isinstance(gref, str) and gref != \"XXXX\" and isinstance(root_id, str) and gref == root_id:",
+  "line": "if isinstance(gref, str) and gref != \"\" and isinstance(root_id, str) and gref == root_id:",
+  "reason": "validate_wire_v2 always runs first, and it requires grant_ref and every cap_chain[i].id to be canonical base64url of 32 bytes (43 chars). So gref is never '' or 'XXXX', and the changed operand is True under both versions.",
+  "occurrence": 1,
+  "lineno": 1264,
+  "fn": "_verify_pcactn_core_unchecked"
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/pca.py",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(None), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
+  "reason": "identity is read only together with pq_pins, and the leaf call never passes pq_pins (it resolves the key only from holder_pq). Its value has no effect.",
+  "occurrence": 1,
+  "lineno": 1284,
+  "fn": "_verify_pcactn_core_unchecked"
+ }
+]

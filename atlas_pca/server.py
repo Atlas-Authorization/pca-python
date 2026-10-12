@@ -16,7 +16,7 @@ Every non-200 result carries a ``WWW-Authenticate: PCA ...`` challenge string.
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Union
 
-from .pca import StrictJsonError, Verdict, decode_b64u_strict, strict_parse, verify_pcactn_core
+from .pca import StrictJsonError, Verdict, artifact_too_large, decode_b64u_strict, strict_parse, verify_pcactn_core
 
 PCA_HEADER = "PCA-Action"
 REALM = "pca"
@@ -107,6 +107,8 @@ def extract_pcactn(headers: Mapping[str, str],
     if raw is not None:
         decoded = decode_b64u_strict(raw)
         if decoded is None:
+            return None, "undecodable"
+        if artifact_too_large(decoded):
             return None, "undecodable"
         try:
             obj = strict_parse(decoded)
