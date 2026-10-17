@@ -312,27 +312,17 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_ml_dsa65_verify_b64u: pk = decode_b64u_strict(pk_b64u, )",
-  "line": "pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)",
-  "reason": "Without the length a key of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(pk) != 1952 (mldsa.py), so the result is the same for every input.",
+  "mutant": "_pq_verify_b64u: pk = decode_b64u_strict(pk_b64u, )",
+  "line": "pk = decode_b64u_strict(pk_b64u, pk_len)",
+  "reason": "Without the length a key of the wrong size reaches pq_backends.verify, which returns False when len(pk) != KEY_TYPES[key_type][0], so the result is the same for every input.",
   "occurrence": 1,
-  "lineno": 549,
-  "fn": "_ml_dsa65_verify_b64u"
+  "lineno": 618,
+  "fn": "_pq_verify_b64u"
  },
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_ml_dsa65_verify_b64u: sg = decode_b64u_strict(sig_b64u, None)",
-  "line": "sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)",
-  "reason": "Without the length a signature of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when len(sig) != 3309, so the result is the same for every input.",
-  "occurrence": 1,
-  "lineno": 550,
-  "fn": "_ml_dsa65_verify_b64u"
- },
- {
-  "crate": "python-pca",
-  "file": "atlas_pca/pca.py",
-  "mutant": "_verify_suite: return True (final fall-through after the three suite branches)",
+  "mutant": "_verify_suite: return True",
   "line": "return False",
   "reason": "This is the last line of _verify_suite and cannot be reached. _resolve_suite returns either None (handled by the first branch) or a key of _SIG_SUITES, which holds exactly three suites: ed25519, ml-dsa-65 and hybrid-ed25519-ml-dsa-65. Each of them returns before this line.",
   "occurrence": 14,
@@ -432,7 +422,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_threshold_share: return True (the `if ssh is None:` branch)",
+  "mutant": "_verify_threshold_share: return True",
   "line": "return False",
   "reason": "The branch cannot be reached. To get there, _signer_registry must have accepted the whole set and registered `role`. That means signer_set is a non-empty list of dicts whose role is a str in THRESHOLD_ROLES, whose publicKey is canonical b64u (a str), and whose pq_pk, if present, is a canonical b64u str. Those are exactly the conditions under which signer_set_hash returns bytes; canonical_bytes_strict cannot fail on rows that contain only such strings.",
   "occurrence": 30,
@@ -472,7 +462,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(None, p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(None, p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "reason": "_resolve_pq_key reads `identity` only on the pq_pins branch (`isinstance(pq_pins, dict) and ... identity in pq_pins`). This call site never passes pq_pins, so identity has no effect. The TS reference also resolves the leaf key only from holder_pq.",
   "occurrence": 1,
@@ -482,7 +472,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"XXholderXX\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"XXholderXX\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "reason": "Same as the identity=None variant: identity is consulted only together with pq_pins, and this call never passes pq_pins.",
   "occurrence": 1,
@@ -492,7 +482,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"HOLDER\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(\"HOLDER\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "reason": "Same as the identity=None variant: identity is consulted only together with pq_pins, and this call never passes pq_pins.",
   "occurrence": 1,
@@ -502,7 +492,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(None), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(None), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "reason": "Non-root hops resolve their PQ key from the parent's holder_pq commitment only, and this call passes no pq_pins (capability.ts:684 likewise passes only holderPq). `identity` is read only on the pq_pins branch, so its value has no effect.",
   "occurrence": 1,
@@ -512,7 +502,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"XXholderXX\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"XXholderXX\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "reason": "identity is read only together with pq_pins, and this call never passes pq_pins (see the identity=None variant).",
   "occurrence": 1,
@@ -522,7 +512,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"HOLDER\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(parent.get(\"HOLDER\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "reason": "identity is read only together with pq_pins, and this call never passes pq_pins (see the identity=None variant).",
   "occurrence": 1,
@@ -582,7 +572,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "strict_parse: c = text[pos[0]] if pos[0] < n else \"XXXX\" (variant 2)",
+  "mutant": "strict_parse: c = text[pos[0]] if pos[0] < n else \"XXXX\"",
   "line": "c = text[pos[0]] if pos[0] < n else \"\"",
   "reason": "Array loop: at end of input `c` is only compared with \",\" and \"]\"; neither \"\" nor \"XXXX\" matches, so both raise the same 'expected \",\" or \"]\"' error at the same offset.",
   "occurrence": 2,
@@ -722,22 +712,12 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_ml_dsa65_verify_b64u: pk = decode_b64u_strict(pk_b64u, None)",
-  "line": "pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)",
-  "reason": "Without the length a key of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(pk) != 1952, so the result is the same.",
+  "mutant": "_pq_verify_b64u: pk = decode_b64u_strict(pk_b64u, None)",
+  "line": "pk = decode_b64u_strict(pk_b64u, pk_len)",
+  "reason": "Without the length a key of the wrong size reaches pq_backends.verify, which returns False when len(pk) != KEY_TYPES[key_type][0], so the result is the same for every input.",
   "occurrence": 1,
-  "lineno": 549,
-  "fn": "_ml_dsa65_verify_b64u"
- },
- {
-  "crate": "python-pca",
-  "file": "atlas_pca/pca.py",
-  "mutant": "_ml_dsa65_verify_b64u: sg = decode_b64u_strict(sig_b64u, )",
-  "line": "sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)",
-  "reason": "Without the length a signature of the wrong size reaches mldsa.ml_dsa65_verify. That function returns False when the backend is missing or len(sig) != 3309, so the result is the same.",
-  "occurrence": 1,
-  "lineno": 550,
-  "fn": "_ml_dsa65_verify_b64u"
+  "lineno": 618,
+  "fn": "_pq_verify_b64u"
  },
  {
   "crate": "python-pca",
@@ -772,7 +752,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_resolve_root_pq: trusted = \"\" (variant 2)",
+  "mutant": "_resolve_root_pq: trusted = \"\"",
   "line": "trusted = None",
   "reason": "This is the other `trusted = None` line in _resolve_root_pq. `trusted` is used only as trusted_pk, and _resolve_pq_key's first branch requires a non-empty str. '' and None both fall through to the same pin lookup.",
   "occurrence": 2,
@@ -792,7 +772,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_chain_unchecked: _resolve_pq_key(None, c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\"))",
+  "mutant": "_verify_chain_unchecked: _resolve_pq_key(None, c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "line": "_resolve_pq_key(parent.get(\"holder\"), c.get(\"pq_pk\"), holder_pq=parent.get(\"holder_pq\")))",
   "reason": "identity is read only on the pq_pins branch, and this hop call never passes pq_pins (capability.ts:684 likewise passes only holderPq). Its value has no effect.",
   "occurrence": 1,
@@ -842,7 +822,7 @@
  {
   "crate": "python-pca",
   "file": "atlas_pca/pca.py",
-  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(None), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))",
+  "mutant": "_verify_pcactn_core_unchecked: _resolve_pq_key(chain[-1].get(None), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "line": "_resolve_pq_key(chain[-1].get(\"holder\"), p.get(\"pq_pk\"), holder_pq=chain[-1].get(\"holder_pq\"))):",
   "reason": "identity is read only together with pq_pins, and the leaf call never passes pq_pins (it resolves the key only from holder_pq). Its value has no effect.",
   "occurrence": 1,

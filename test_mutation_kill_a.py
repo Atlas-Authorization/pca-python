@@ -8,19 +8,44 @@ from atlas_pca import ed25519
 from atlas_pca.ed25519 import _ID, _G, _decode, _eq, _is_small_order, _p, _q, _recover_x
 from atlas_pca.pca import (
     MAX_JSON_CHARS, StrictJsonError, _PinnedPq, _has_surrogate, _plain, _resolve_pq_key,
-    _utf8_key, canonical_bytes, canonicalize, strict_number_error, strict_parse, unb64u,
+    _utf8_key, canonical_bytes, canonicalize, strict_number_error, strict_parse, suite_available, unb64u,
 )
 
 
 # ---- ed25519 --------------------------------------------------------------------------
 
 def _keypair_sig(msg):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
+    """RFC 8032 Ed25519 key + signature over `msg` for the seed bytes(range(32)). Uses `cryptography` (the optional
+    `fast` extra) when installed, else a test-only RFC 8032 signer over the verifier's own curve arithmetic -- the
+    no-optional-dependencies job has no `cryptography`, and Ed25519 signing is deterministic, so both paths yield
+    the same bytes."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    except ImportError:
+        return _pure_keypair_sig(bytes(range(32)), msg)
     sk = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     pub = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     return pub, sk.sign(msg)
+
+
+def _pure_keypair_sig(seed, msg):
+    import hashlib
+
+    def enc(P):
+        zi = ed25519._inv(P[2])
+        x, y = P[0] * zi % _p, P[1] * zi % _p
+        return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    A = enc(ed25519._mul(a, _G))
+    r = int.from_bytes(hashlib.sha512(h[32:] + msg).digest(), "little") % _q
+    R = enc(ed25519._mul(r, _G))
+    k = int.from_bytes(hashlib.sha512(R + A + msg).digest(), "little") % _q
+    return A, R + ((r + k * a) % _q).to_bytes(32, "little")
 
 
 def test_recover_x_zero_x2_branch():
@@ -318,9 +343,13 @@ def test_signable_hop_body_pq_pk_binding():
 
     base = {"issuer": "i", "holder": "h", "caveats": [], "parent": None}
     want = {"issuer": "i", "holder": "h", "caveats": [], "parent": None, "alg": "ml-dsa-65"}
-    assert _signable_hop_body({**base, "alg": "ml-dsa-65"}) == (want, None)
-    assert _signable_hop_body({**base, "alg": "ml-dsa-65", "pq_pk": 5}) == (want, None)
-    assert _signable_hop_body({**base, "alg": "ml-dsa-65", "pq_pk": "PK"}) == ({**want, "pq_pk": "PK"}, None)
+    if suite_available("ml-dsa-65"):
+        assert _signable_hop_body({**base, "alg": "ml-dsa-65"}) == (want, None)
+        assert _signable_hop_body({**base, "alg": "ml-dsa-65", "pq_pk": 5}) == (want, None)
+        assert _signable_hop_body({**base, "alg": "ml-dsa-65", "pq_pk": "PK"}) == ({**want, "pq_pk": "PK"}, None)
+    else:  # no ML-DSA backend (no dilithium-py, OpenSSL < 3.5): the suite fails closed before any body is built
+        for c in ({**base, "alg": "ml-dsa-65"}, {**base, "alg": "ml-dsa-65", "pq_pk": "PK"}):
+            assert _signable_hop_body(c) == (None, "unsupported_suite: ml-dsa-65")
     assert _signable_hop_body({**base, "pq_pk": "PK"}) == (base, None)
 
 

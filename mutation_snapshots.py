@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from atlas_pca import StrictJsonError, canonicalize_strict, strict_parse, verify_pcactn_core
 from atlas_pca.pca import decode_b64u_strict, strict_number_error, verify_chain
-from test_conformance import DIR, DOC, _terminal_wire_false, _unsupported_suite
+from test_conformance import DIR, DOC, _input, _intent_policy, _intent_v2, _terminal_wire_false, _unsupported_suite
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "testdata", "mutation-snapshots.json.gz")
@@ -50,7 +50,8 @@ def collect():
                 continue
             raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
             ctx = v["context"]
-            got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"], allowed_suites=ctx.get("allowed_suites"))
+            got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"], allowed_suites=ctx.get("allowed_suites"),
+                                     intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
             out["vectors"][src + ":" + v["name"]] = [got.allow, got.checks, got.reason]
             p = v.get("pcactn")
             chain = p.get("cap_chain") if isinstance(p, dict) else None
@@ -64,14 +65,14 @@ def collect():
                         out["chains"][f"{src}:{v['name']}:{tag}"] = ["exc", type(e).__name__, str(e)]
     inputs = list(EXTRA_JSON)
     for d in (DOC["primitives"], adv["primitives"]):
-        inputs += [c["input"] for c in d.get("json_parse", [])]
+        inputs += [_input(c) for c in d.get("json_parse", [])]
     for s in inputs:
         out["parse"][s] = parse_outcome(s)
     for i, n in enumerate(NUMS):
         out["nums"][str(i)] = strict_number_error(n)
     for d in (DOC["primitives"], adv["primitives"]):
         for c in d.get("b64u", []):
-            r = decode_b64u_strict(c["input"], c.get("len"))
+            r = decode_b64u_strict(_input(c), c.get("len"))
             out["b64u"][f"{c['input']}|{c.get('len')}"] = None if r is None else r.hex() if isinstance(r, (bytes, bytearray)) else repr(r)
     return out
 

@@ -10,6 +10,8 @@ Configure it via Django settings::
     PCA_AUDIENCE = "rs-orders"
     PCA_RESOLVE_GRANT = "myapp.auth.resolve_grant"   # dotted path, or a callable
     # optional: PCA_NOW = <epoch-ms int>  (testing / fixed clock)
+    # optional: PCA_INTENT_POLICY = {"require": True, "min_fidelity_ppm": 900000}  (Intent Layer M2)
+    # optional: PCA_INTENT_V2 = {...} or a callable (pcactn) -> dict | None, or its dotted path  (Intent Layer v2 state)
 
 Django is imported lazily, so the base ``atlas_pca`` package stays dependency-free
 (``pip install 'atlas-pca[django]'`` pulls Django in).
@@ -56,7 +58,14 @@ class PCAMiddleware:
             raise ImproperlyConfigured("settings.PCA_RESOLVE_GRANT must be a dotted path or a callable")
 
         self._now = getattr(settings, "PCA_NOW", None)
-        self._guard = require_pca(audience=audience, resolve_grant=resolver, now=self._now)
+        intent_v2 = getattr(settings, "PCA_INTENT_V2", None)
+        if isinstance(intent_v2, str):
+            intent_v2 = import_string(intent_v2)
+        if intent_v2 is not None and not isinstance(intent_v2, dict) and not callable(intent_v2):
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured("settings.PCA_INTENT_V2 must be a dict, a callable or a dotted path to a callable")
+        self._guard = require_pca(audience=audience, resolve_grant=resolver, now=self._now,
+                                  intent_policy=getattr(settings, "PCA_INTENT_POLICY", None), intent_v2=intent_v2)
 
     def _deny(self, result: PCAResult):
         from django.http import JsonResponse

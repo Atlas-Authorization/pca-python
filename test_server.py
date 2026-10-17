@@ -208,3 +208,44 @@ def test_django_middleware():
     forbidden = mw_bad(rf.post("/protected", HTTP_PCA_ACTION=_header_value(PCACTN)))
     assert forbidden.status_code == 403
     _ = dj  # keep the import referenced
+
+
+# ---- 0.4.2 audit: header injection + non-string grant_ref --------------------------------
+
+def test_deny_reason_never_reaches_www_authenticate(monkeypatch):
+    """A verdict reason (may carry attacker text) must not be echoed into the challenge header (CR/LF injection)."""
+    from atlas_pca import server
+    from atlas_pca.pca import Verdict
+
+    evil = 'x"\r\nSet-Cookie: pwned=1\r\n'
+    monkeypatch.setattr(server, "verify_pcactn_core", lambda *a, **k: Verdict(allow=False, checks={}, reason=evil))
+    res = _guard()({"PCA-Action": _header_value(PCACTN)}, None)
+    assert res.status == 403
+    assert res.www_authenticate == f'PCA realm="pca", audience="{AUD}", error="insufficient_authority"'
+    assert "\r" not in res.www_authenticate and "\n" not in res.www_authenticate and "pwned" not in res.www_authenticate
+
+
+@pytest.mark.parametrize("bad", [None, ["g"], {"id": "g"}, 7, True])
+def test_non_string_grant_ref_is_401_and_never_resolved(bad):
+    seen = []
+    p = dict(PCACTN, grant_ref=bad)
+    res = _guard(resolve_grant=lambda ref: seen.append(ref) or GRANT)({"PCA-Action": _header_value(p)}, None)
+    assert (res.ok, res.status, res.error) == (False, 401, "malformed")
+    assert res.www_authenticate == f'PCA realm="pca", audience="{AUD}", error="invalid_pcactn", error_description="malformed PCActn"'
+    assert seen == []
+
+
+def test_missing_grant_ref_is_401():
+    p = {k: v for k, v in PCACTN.items() if k != "grant_ref"}
+    res = _guard()({"PCA-Action": _header_value(p)}, None)
+    assert (res.status, res.error) == (401, "malformed")
+
+
+def test_resolver_exception_fails_closed_403():
+    def boom(ref):
+        raise TypeError("unhashable")
+
+    res = _guard(resolve_grant=boom)({"PCA-Action": _header_value(PCACTN)}, None)
+    assert (res.ok, res.status, res.error) == (False, 403, "resolve_grant_error")
+    assert res.www_authenticate == (f'PCA realm="pca", audience="{AUD}", error="insufficient_authority", '
+                                    'error_description="grant resolution failed (fail closed)"')
