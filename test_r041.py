@@ -23,7 +23,10 @@ with open(os.path.join(DIR, "vectors.json"), encoding="utf-8") as _f:
 PRIM = DOC["primitives"]
 CAVEAT_EVAL = PRIM["caveat_eval"]
 PCA_HEADER = PRIM["pca_header"]
-SHARE_VECTORS = [v for v in DOC["vectors"] if v["name"].startswith("r041-share-") and v.get("requires") is None]
+# Suite capability: a share vector naming a suite (`requires`) this runtime lacks is not compared here (test_conformance
+# asserts its unsupported_suite refusal); one naming a suite the runtime has is.
+SUPPORTED = frozenset(atlas_pca.supported_suites())
+SHARE_VECTORS = [v for v in DOC["vectors"] if v["name"].startswith("r041-share-") and v.get("requires") in (None, *SUPPORTED)]
 
 
 def _helpers():
@@ -183,6 +186,8 @@ def test_share_wire(v):
 
 
 def _share_base():
+    if "ml-dsa-65" not in SUPPORTED:
+        pytest.skip("no ML-DSA-65 backend in this runtime (unsupported_suite)")
     v = next(x for x in SHARE_VECTORS if x["name"] == "r041-share-ml-dsa-65-carried")
     return copy.deepcopy(v["pcactn"])
 
@@ -192,8 +197,10 @@ def test_share_wire_reasons():
     assert validate_wire_v2(p) is None
     p["threshold"]["shares"][0]["alg"] = None
     assert validate_wire_v2(p) == "threshold.shares[0]: 'alg' must be a string"
-    p["threshold"]["shares"][0]["alg"] = "ml-dsa-87"
-    assert validate_wire_v2(p) == "threshold.shares[0]: unknown signature alg 'ml-dsa-87'"
+    p["threshold"]["shares"][0]["alg"] = "ml-dsa-44"  # not a registered suite
+    assert validate_wire_v2(p) == "threshold.shares[0]: unknown signature alg 'ml-dsa-44'"
+    p["threshold"]["shares"][0]["alg"] = "ml-dsa-87"  # implemented since 0.4.2: judged by its own lengths
+    assert validate_wire_v2(p) == "threshold.shares[0]: 'sig' is not canonical base64url (4627 bytes) for alg 'ml-dsa-87'"
     p["threshold"]["shares"][0]["alg"] = "ml-dsa-65"
     p["threshold"]["shares"][0]["sig"] = p["threshold"]["shares"][0]["sig"][:-4]
     assert validate_wire_v2(p) == "threshold.shares[0]: 'sig' is not canonical base64url (3309 bytes) for alg 'ml-dsa-65'"

@@ -23,11 +23,14 @@ import os
 import unittest
 
 from atlas_pca import (
-    StrictJsonError, canonicalize_strict, decode_b64u_strict, hash_canonical, merkle_root, params_digest,
-    strict_parse, verify_artifact_suite, verify_chain, verify_inclusion, verify_pcactn_core, verify_threshold_share,
+    REGISTERED_SUITES, StrictJsonError, action_schema_digest, canonicalize_strict, check_session_revocation, conform_action,
+    decide_classifier_dimensions, decide_intent_world, decide_param_provenance, decode_b64u_strict, hash_canonical,
+    merkle_root, params_digest, strict_parse, verify_action_schema, verify_artifact_suite, verify_chain, verify_inclusion,
+    verify_pcactn_core, verify_threshold_share,
 )
 from atlas_pca.mldsa import ml_dsa65_available
-from atlas_pca.pca import b64u, sha256, signer_set_hash
+from atlas_pca.intent_map import commit_leaves, decide_map_primitive
+from atlas_pca.pca import b64u, sha256, signer_set_hash, supported_suites
 
 DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformance")
 
@@ -39,12 +42,11 @@ def _load(name):
 
 DOC = _load("vectors.json")
 
-# The three cross-impl signature suites. `ml-dsa-65` / `hybrid-ed25519-ml-dsa-65` need dilithium-py at runtime;
-# if it is absent they cannot produce a positive verdict, so they drop out of the RUNNABLE set (honest skip).
+# This verifier's capability manifest in this runtime (supported_suites(): ed25519 + every ML-DSA / SLH-DSA suite whose
+# backend - dilithium-py or OpenSSL >= 3.5 libcrypto - is usable; packages/pca/conformance/SUITES.md). A vector needing a
+# suite outside it is not skipped silently: the verifier must deny it with the distinct reason unsupported_suite.
 _ML_DSA = ml_dsa65_available()
-SUPPORTED_SUITES = frozenset(
-    {"ed25519"} | ({"ml-dsa-65", "hybrid-ed25519-ml-dsa-65"} if _ML_DSA else set())
-)
+SUPPORTED_SUITES = frozenset(supported_suites())
 
 
 def _alg(obj):
@@ -74,12 +76,56 @@ def _unsupported_suite(v):
     return None
 
 
+def _intent_policy(ctx):
+    """Intent Layer M2: a vector's verifier policy. `context.intent_policy_json` (raw JSON TEXT, parsed here with the
+    platform parser so e.g. 950000.0 stays a float) wins over `context.intent_policy`. A bare `-0` integer lexeme parses
+    as -0.0, like JSON.parse in the reference (negative zero is a misconfigured threshold)."""
+    if "intent_policy_json" in ctx:
+        return json.loads(ctx["intent_policy_json"], parse_int=lambda t: -0.0 if t == "-0" else int(t))
+    return ctx.get("intent_policy")
+
+
+
+_REV_PARAMS = ("session", "scope", "authority", "ids", "now", "max_age_ms", "last")
+
+
+def _input(e):
+    """A primitive entry's input (README "Raw JSON text members"): `input_json`, the WHOLE input as raw JSON text, wins
+    over `input` and is parsed here with the platform parser, a bare `-0` kept as negative zero (-0.0)."""
+    if "input_json" in e:
+        return json.loads(e["input_json"], parse_int=lambda t: -0.0 if t == "-0" else int(t))
+    return e["input"]
+
+
+def _intent_v2(ctx):
+    """Intent Layer v2: the vector's verifier state (`context.intent_v2`, TS IntentV2Context), passed as is."""
+    return ctx.get("intent_v2")
+
+
+def _table(name):
+    """A primitive table, or None when this corpus does not carry it yet (the caller skips with a count)."""
+    t = DOC["primitives"].get(name)
+    return t if isinstance(t, list) and t else None
+
+
 def _terminal_wire_false(v):
     c = v["expect"]["checks"]
     return len(c) == 1 and c.get("wire") is False
 
 
+def _lacks_suite(e):
+    """README "Suite capability": a W-B primitive whose `requires_suite` this runtime lacks is not compared."""
+    rs = e.get("requires_suite")
+    return isinstance(rs, str) and rs not in SUPPORTED_SUITES
+
+
 class Conformance(unittest.TestCase):
+    def _assert_suite_refusal(self, refused, ref_accepts, reason):
+        """An entry under a suite outside the manifest must be refused; when the reference accepts it, with unsupported_suite."""
+        self.assertTrue(refused, reason)
+        if ref_accepts:
+            self.assertIn("unsupported_suite", reason or "", reason)
+
     def test_format(self):
         self.assertEqual(DOC["format"], 2)
         self.assertGreaterEqual(len(DOC["vectors"]), 172 + 60)  # 172 golden + the sampled adv-* families (minimum, not exact: the full set is vectors-adversarial.json.gz)
@@ -94,14 +140,44 @@ class Conformance(unittest.TestCase):
             # suite. A terminal {wire:false} negative is run regardless: unknown/unimplemented alg -> wire fail.
             if suite is not None and not _terminal_wire_false(v):
                 skipped_by_suite[suite] = skipped_by_suite.get(suite, 0) + 1
+                if isinstance(v.get("pcactn"), dict):
+                    with self.subTest(v["name"] + " (unsupported_suite)"):
+                        ctx = v["context"]
+                        got = verify_pcactn_core(v["pcactn"], v["grant"], now=ctx["now"], audience=ctx["aud"])
+                        self.assertFalse(got.allow, got.reason)
+                        self.assertIn("unsupported_suite", got.reason or "", got.reason)
+                continue
+            # Intent Layer v2 (README "Suite capability"): `requires_suite` names the suite a v2 artifact uses. A suite
+            # outside this runtime's manifest (supported_suites()) is not compared: the verdict must deny with
+            # `unsupported_suite` in its reason (never allow, never another reason), and the vector is counted.
+            req_suite = v.get("requires_suite")
+            if isinstance(req_suite, str) and req_suite not in SUPPORTED_SUITES:
+                skipped_by_suite[req_suite] = skipped_by_suite.get(req_suite, 0) + 1
+                with self.subTest(v["name"] + " (unsupported_suite)"):
+                    ctx = v["context"]
+                    raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
+                    got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"],
+                                             allowed_suites=ctx.get("allowed_suites"),
+                                             intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
+                    self.assertFalse(got.allow, got.reason)
+                    # a vector that names its refusal (reason_contains: e.g. the session-root pin checks) reaches it
+                    # before the suite work, on every host
+                    self.assertIn(v["expect"].get("reason_contains", "unsupported_suite"), got.reason or "", got.reason)
                 continue
             with self.subTest(v["name"]):
                 raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
                 ctx = v["context"]
+                # Intent Layer M2: an `intent-*` vector may carry `context.intent_policy`; `expect.checks.intent` is
+                # present exactly when the check was evaluated. Intent Layer v2: `context.intent_v2` is the verifier
+                # state; `expect.checks` lists schema / intent_session / layers / accumulators / facts / provenance /
+                # classes exactly when reported.
                 got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"],
-                                         allowed_suites=ctx.get("allowed_suites"))
+                                         allowed_suites=ctx.get("allowed_suites"),
+                                         intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
                 self.assertEqual(got.allow, v["expect"]["allow"], got.reason)
                 self.assertEqual(got.checks, v["expect"]["checks"], got.reason)
+                if "reason_contains" in v["expect"]:
+                    self.assertIn(v["expect"]["reason_contains"], got.reason or "", got.reason)
             passed += 1
         total = len(DOC["vectors"])
         skipped = sum(skipped_by_suite.values())
@@ -133,14 +209,21 @@ class Conformance(unittest.TestCase):
     def test_threshold_shares(self):
         """v2.1 agent-leaf share binding: every primitives.threshold_share[] entry must verify over the
         signerSetHash|t-bound share message iff `valid`; in particular the PRE-v2.1 bare agent share and a
-        cross-signer-set replay MUST be rejected. All corpus shares are ed25519, so no PQ backend is needed."""
+        cross-signer-set replay MUST be rejected. An entry whose `requires` suite this runtime lacks is not compared: it
+        must be refused (fail closed, unsupported_suite) and is counted."""
         shares = DOC["primitives"]["threshold_share"]
         self.assertTrue(shares)
-        accepted = rejected = 0
+        accepted = rejected = unsupported = 0
         bare_rejected = wrong_set_rejected = False
         for s in shares:
             name = s.get("name") or s["role"]
             want = s.get("valid", True)
+            req = s.get("requires")
+            if isinstance(req, str) and req not in SUPPORTED_SUITES:
+                unsupported += 1
+                with self.subTest(name + " (unsupported_suite)"):
+                    self.assertFalse(verify_threshold_share(s), f"{name}: share under unsupported suite {req} verified")
+                continue
             with self.subTest(name):
                 got = verify_threshold_share(s)
                 self.assertEqual(got, want, f"{name}: share verified={got}, want valid={want}")
@@ -155,7 +238,7 @@ class Conformance(unittest.TestCase):
         self.assertTrue(bare_rejected, "v2.1 binding: the pre-v2.1 bare agent share MUST be rejected")
         self.assertTrue(wrong_set_rejected, "v2.1 binding: a cross-signer-set agent share replay MUST be rejected")
         print(f"\n[threshold_share] {accepted} valid accepted, {rejected} invalid rejected "
-              f"(incl. v2.1 bare-agent-share + cross-signer-set replay)")
+              f"(incl. v2.1 bare-agent-share + cross-signer-set replay); {unsupported} refused as unsupported_suite")
 
     def test_pq_artifacts(self):
         """pq_artifact[]: each transparency/authority artifact signature must verify over `message` under its
@@ -180,25 +263,198 @@ class Conformance(unittest.TestCase):
 
     def test_chain_pin(self):
         """R4-01: the standalone verify_chain needs a verifier-side PQ pin (pq_pins) or the stored grant (trusted_root)
-        for a non-ed25519 root. Vectors that need a real ML-DSA-65 verdict are skipped (never passed) when it is absent."""
+        for a non-ed25519 root. Suite capability: an entry whose `requires` suite this runtime lacks is compared only where
+        no signature is needed (the pin / policy refusals, decided on the registered suite before any crypto); an entry the
+        reference ACCEPTS must be refused with unsupported_suite (fail closed), and one it rejects for a crypto reason must
+        be refused. Those are counted as unsupported, never passed."""
         vecs = DOC["primitives"].get("chain_pin", [])
         self.assertGreaterEqual(len(vecs), 25)
         ran = skipped = 0
         for v in vecs:
-            algs = {_alg(c) for c in v["chain"]}
-            needs_crypto = v["expect"]["ok"] or not v["expect"].get("reason", "").startswith("hop 0: root suite")
-            if (algs - {"ed25519"}) and needs_crypto and not _ML_DSA:
-                skipped += 1
-                continue
+            req = v.get("requires")
+            lacks = isinstance(req, str) and req not in SUPPORTED_SUITES
+            pin_reason = v["expect"].get("reason", "").startswith("hop 0: root suite")
             with self.subTest(v["name"]):
                 ok, why = verify_chain(v["chain"], v.get("expected_root_issuer"), v.get("allowed_suites"),
                                        pq_pins=v.get("pq_pins"), trusted_root=v.get("trusted_root"))
-                self.assertEqual(ok, v["expect"]["ok"], why)
-                if v["expect"].get("reason", "").startswith("hop 0: root suite"):
-                    self.assertEqual(why, v["expect"]["reason"])
-            ran += 1
-        print(f"\n[chain_pin] {ran} checked, {skipped} skipped (no ML-DSA-65)")
+                if lacks and not pin_reason:
+                    self.assertFalse(ok, why)
+                    if v["expect"]["ok"]:
+                        self.assertIn("unsupported_suite", why or "", why)
+                else:
+                    self.assertEqual(ok, v["expect"]["ok"], why)
+                    if pin_reason:
+                        self.assertEqual(why, v["expect"]["reason"])
+            if lacks and not pin_reason:
+                skipped += 1
+            else:
+                ran += 1
+        print(f"\n[chain_pin] {ran} checked, {skipped} unsupported_suite (suite outside this runtime's manifest)")
         self.assertEqual(ran + skipped, len(vecs))
+
+    def test_intent_schema(self):
+        """Rule 14 alone (primitives.intent_schema): `sig` = verify_action_schema, `digest` = action_schema_digest when
+        the signature is valid, `conform` = conform_action {ok, code?, path?}. Reasons are not compared."""
+        t = _table("intent_schema")
+        if t is None:
+            print("\n[intent_schema] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            i, x = _input(e), e["expect"]
+            with self.subTest(e["name"]):
+                self.assertEqual(verify_action_schema(i["schema"], i["keys"])["ok"], x["sig"], e["name"])
+                if "digest" in x:
+                    self.assertEqual(action_schema_digest(i["schema"]), x["digest"], e["name"])
+                c = conform_action(i["schema"], i["verb"], i["params"])
+                got = {"ok": c["ok"]}
+                if not c["ok"]:
+                    got["code"] = c["code"]
+                    if "path" in c:
+                        got["path"] = c["path"]
+                self.assertEqual(got, x["conform"], e["name"])
+        print(f"\n[intent_schema] {len(t)} checked")
+
+    def test_intent_revocation(self):
+        """Rule 13 step 7 alone (primitives.intent_revocation, input {epoch, revoked, session, authority, ids, now,
+        max_age_ms, last?}): check_session_revocation `ok`. An entry whose epoch names a suite outside this runtime's
+        manifest must be refused with unsupported_suite (counted, not compared)."""
+        t = _table("intent_revocation")
+        if t is None:
+            print("\n[intent_revocation] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            i = _input(e)
+            # the EVIDENCE is the input without the check parameters (so an extra input member makes it malformed)
+            ev = {k: v for k, v in i.items() if k not in _REV_PARAMS}
+            kw = {"last": i["last"]} if "last" in i else {}
+            if "scope" in i:
+                kw["scope"] = i["scope"]
+            alg = i["epoch"].get("alg", "ed25519") if isinstance(i.get("epoch"), dict) else "ed25519"
+            with self.subTest(e["name"]):
+                got = check_session_revocation(ev, session=i["session"], authority=i["authority"], ids=i["ids"],
+                                               now=i["now"], max_age_ms=i["max_age_ms"], **kw)
+                if isinstance(alg, str) and alg in REGISTERED_SUITES and alg not in SUPPORTED_SUITES:
+                    self.assertFalse(got["ok"])
+                    self.assertIn("unsupported_suite", got.get("reason", ""))
+                else:
+                    self.assertEqual(got["ok"], e["expect"]["ok"], got.get("reason"))
+        print(f"\n[intent_revocation] {len(t)} checked")
+
+    def test_intent_map_commit(self):
+        """Rule 19 (primitives.intent_map_commit): the commitment of a full leaf list {kind, salt, leaf} exactly."""
+        t = _table("intent_map_commit")
+        if t is None:
+            print("\n[intent_map_commit] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            with self.subTest(e["name"]):
+                self.assertEqual(commit_leaves(_input(e)["leaves"]), e["expect"]["map_commit"], e["name"])
+        print(f"\n[intent_map_commit] {len(t)} checked")
+
+    def test_intent_map(self):
+        """Rule 19 Z0 (primitives.intent_map): `ok`, and when true the cell indices and `p_ppm` exactly (reasons are not
+        compared; `params` absent = {})."""
+        t = _table("intent_map")
+        if t is None:
+            print("\n[intent_map] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            x = e["expect"]
+            with self.subTest(e["name"]):
+                got = decide_map_primitive(_input(e))
+                self.assertEqual(got["ok"], x["ok"], got.get("reason"))
+                if x["ok"]:
+                    self.assertEqual(got["cell"], x["cell"], e["name"])
+                    self.assertEqual(got["p_ppm"], x["p_ppm"], e["name"])
+        print(f"\n[intent_map] {len(t)} checked")
+
+    def test_intent_world(self):
+        """Rule 16 alone (primitives.intent_world): `ok`, and when true `world` and `single_source` exactly."""
+        t = _table("intent_world")
+        if t is None:
+            print("\n[intent_world] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            x = e["expect"]
+            with self.subTest(e["name"]):
+                got = decide_intent_world(_input(e))
+                if _lacks_suite(e):
+                    self._assert_suite_refusal(not got["ok"], x["ok"], got.get("reason"))
+                    continue
+                self.assertEqual(got["ok"], x["ok"], got.get("reason"))
+                if x["ok"]:
+                    self.assertEqual(got["world"], x["world"], e["name"])
+                    self.assertEqual(got["single_source"], x["single_source"], e["name"])
+        print(f"\n[intent_world] {len(t)} checked")
+
+    def test_intent_provenance(self):
+        """Rule 17 alone (primitives.intent_provenance): `outcome`; unless deny, `labels` and `classes`; for a
+        question, `friction`."""
+        t = _table("intent_provenance")
+        if t is None:
+            print("\n[intent_provenance] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            x = e["expect"]
+            with self.subTest(e["name"]):
+                got = decide_param_provenance(_input(e))
+                if _lacks_suite(e):
+                    self._assert_suite_refusal(got["outcome"] == "deny", x["outcome"] != "deny", got.get("reason"))
+                    continue
+                self.assertEqual(got["outcome"], x["outcome"], got.get("reason"))
+                if x["outcome"] != "deny":
+                    self.assertEqual(got["labels"], x["labels"], e["name"])
+                    self.assertEqual(got["classes"], x["classes"], e["name"])
+                if x["outcome"] == "question":
+                    self.assertEqual(got["friction"], x["friction"], e["name"])
+        print(f"\n[intent_provenance] {len(t)} checked")
+
+    def test_intent_classifier(self):
+        """Rule 18 alone (primitives.intent_classifier): `ok`, and when true `classes` exactly."""
+        t = _table("intent_classifier")
+        if t is None:
+            print("\n[intent_classifier] table absent: 0 checked, 1 table skipped")
+            return
+        for e in t:
+            x = e["expect"]
+            with self.subTest(e["name"]):
+                got = decide_classifier_dimensions(_input(e))
+                if _lacks_suite(e):
+                    self._assert_suite_refusal(not got["ok"], x["ok"], got.get("reason"))
+                    continue
+                self.assertEqual(got["ok"], x["ok"], got.get("reason"))
+                if x["ok"]:
+                    self.assertEqual(got["classes"], x["classes"], e["name"])
+        print(f"\n[intent_classifier] {len(t)} checked")
+
+    def test_intent_wb_active(self):
+        """Which W-B checks a verifier reports (primitives.intent_wb_active, reference intentWBActive): {facts,
+        provenance, classes} exactly. Skipped with a count when the table or atlas_pca.intent_wb.intent_wb_active is absent."""
+        import atlas_pca.intent_wb as wb
+        t = _table("intent_wb_active")
+        fn = getattr(wb, "intent_wb_active", None)
+        if t is None or fn is None:
+            print("\n[intent_wb_active] %s: 0 checked, 1 table skipped" % ("table absent" if t is None else "intent_wb_active not implemented"))
+            return
+        for e in t:
+            with self.subTest(e["name"]):
+                self.assertEqual(fn(_input(e)), e["expect"], e["name"])
+        print(f"\n[intent_wb_active] {len(t)} checked")
+
+    def test_intent_read_purpose(self):
+        """Read purpose (V14, primitives.intent_read_purpose, reference decideReadPurpose): {outcome, minimise, uncovered}
+        exactly. Skipped with a count when the table or atlas_pca.intent_wb.decide_read_purpose is absent."""
+        import atlas_pca.intent_wb as wb
+        t = _table("intent_read_purpose")
+        fn = getattr(wb, "decide_read_purpose", None)
+        if t is None or fn is None:
+            print("\n[intent_read_purpose] %s: 0 checked, 1 table skipped" % ("table absent" if t is None else "decide_read_purpose not implemented"))
+            return
+        for e in t:
+            with self.subTest(e["name"]):
+                got = fn(_input(e))
+                self.assertEqual({k: got.get(k) for k in e["expect"]}, e["expect"], e["name"])
+        print(f"\n[intent_read_purpose] {len(t)} checked")
 
     def test_primitives(self):
         prim = DOC["primitives"]
@@ -214,17 +470,17 @@ class Conformance(unittest.TestCase):
 
     def test_json_parse(self):
         for c in DOC["primitives"]["json_parse"]:
-            with self.subTest(c["input"][:40]):
+            with self.subTest(_input(c)[:40]):
                 if c["accept"]:
-                    self.assertEqual(canonicalize_strict(strict_parse(c["input"])), c["canonical"])
+                    self.assertEqual(canonicalize_strict(strict_parse(_input(c))), c["canonical"])
                 else:
                     with self.assertRaises(StrictJsonError):
-                        strict_parse(c["input"])
+                        strict_parse(_input(c))
 
     def test_b64u(self):
         for c in DOC["primitives"]["b64u"]:
-            with self.subTest(c["input"][:30]):
-                self.assertEqual(decode_b64u_strict(c["input"], c.get("len")) is not None, c["valid"])
+            with self.subTest(_input(c)[:30]):
+                self.assertEqual(decode_b64u_strict(_input(c), c.get("len")) is not None, c["valid"])
 
     def test_threshold_set(self):
         """R6-02/R6-03/R6-04: whole signer-set validation, t in 1..3, PQ-required roles. Entries whose `requires`
@@ -260,7 +516,7 @@ class Conformance(unittest.TestCase):
         ents = DOC["primitives"].get("malformed", [])
         self.assertGreaterEqual(len(ents), 80)
         for m in ents:
-            i = m["input"]
+            i = _input(m)
             with self.subTest(m["name"]):
                 try:
                     if m["api"] == "chain":
@@ -314,7 +570,7 @@ def _expand_depth(e):
     """Apply a depth case's optional `expand` ({marker, levels, leaf}) ITERATIVELY: the verifier, not the runner, must
     face the huge value. chain / threshold_share: the string value equal to `marker` anywhere in input is replaced by
     `levels` nested lists around `leaf`; pcactn_json / json_parse: the substring `marker` of input.text is replaced."""
-    inp = e["input"]
+    inp = _input(e)
     x = e.get("expand")
     if not x:
         return inp

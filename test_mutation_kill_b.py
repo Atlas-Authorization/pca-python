@@ -179,6 +179,21 @@ def test_pure_pq_root_grant_is_trusted_root():
     assert ok is False and why.startswith("hop 0: root suite 'ml-dsa-65' needs a PQ key pinned")
 
 
+@needs_mldsa
+def test_stored_grant_and_pin_must_agree():
+    # 0.4.2 fail closed: with trusted_root AND a pin for the issuer, a disagreeing pin refuses (the grant never overrides it)
+    pk, sk = ML.keygen()
+    other_pk, _ = ML.keygen()
+    root = _cap(PRINCIPAL, _pub(AGENT), CAVEATS, pq=(pk, sk))
+    iss = _pub(PRINCIPAL)
+    assert verify_chain([root], iss, trusted_root=copy.deepcopy(root))[0] is True
+    assert verify_chain([root], iss, pq_pins={iss: root["pq_pk"]}, trusted_root=copy.deepcopy(root))[0] is True
+    ok, why = verify_chain([root], iss, pq_pins={iss: b64u(other_pk)}, trusted_root=copy.deepcopy(root))
+    assert ok is False and why == ("hop 0: root suite 'ml-dsa-65': the server-side PQ pin for the root issuer (policy.pqPins) "
+                                   "does not match the stored grant's pq_pk (fail closed)")
+    assert verify_chain([root], iss, pq_pins={_pub(AGENT): b64u(other_pk)}, trusted_root=copy.deepcopy(root))[0] is True
+
+
 # ---- validate_wire_v2 --------------------------------------------------------------------------------------------------
 
 def test_wire_pq_sig_excluded_from_strict_body():
@@ -219,6 +234,16 @@ def test_wire_internal_fault_reason():
 
 def test_wire_pq_pk_length_is_enforced():
     base = dict(P0, alg="ml-dsa-65", sig=b64u(bytes(3309)))
+    if not pca.suite_available("ml-dsa-65"):
+        # no ML-DSA backend (no dilithium-py, OpenSSL < 3.5): the suite is refused fail-closed at the wire stage,
+        # before any pq_pk length check, on the leaf and on a hop alike
+        for n in (1952, 32, 1951, 1953):
+            assert validate_wire_v2(dict(base, pq_pk=b64u(bytes(n)))) == "unsupported_suite: ml-dsa-65", n
+            v = _verify(dict(base, pq_pk=b64u(bytes(n))))
+            assert (v.allow, v.checks, v.reason) == (False, {"wire": False}, "wire: unsupported_suite: ml-dsa-65")
+        hop = dict(ROOT, alg="ml-dsa-65", sig=b64u(bytes(3309)), pq_pk=b64u(bytes(64)))
+        assert validate_wire_v2(dict(P0, cap_chain=[hop])) == "cap_chain[0]: unsupported_suite: ml-dsa-65"
+        return
     assert validate_wire_v2(dict(base, pq_pk=b64u(bytes(1952)))) is None
     for n in (32, 1951, 1953):
         assert validate_wire_v2(dict(base, pq_pk=b64u(bytes(n)))) == "'pq_pk' is not canonical base64url (1952 bytes)", n
