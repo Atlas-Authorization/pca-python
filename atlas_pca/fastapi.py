@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .pca import Verdict
-from .server import GrantResolver, PCAResult, require_pca
+from .server import GrantResolver, IntentV2Source, PCAResult, require_pca
 
 
 @dataclass
@@ -23,7 +23,8 @@ class PCAContext:
 
 
 def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
-               now: Optional[int] = None) -> Callable:
+               now: Optional[int] = None, intent_policy: Optional[dict] = None,
+               intent_v2: IntentV2Source = None) -> Callable:
     """Create a FastAPI dependency enforcing a valid PCActn.
 
     Usage::
@@ -36,6 +37,10 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
         @app.post("/transfer")
         async def transfer(pca = Depends(guard), request: Request = None):
             ...  # pca.pcactn / pca.verdict ; also request.state.pca
+
+    ``intent_policy`` (optional) is the Intent Layer M2 policy forwarded to ``verify_pcactn_core``.
+    ``intent_v2`` (optional) is the Intent Layer v2 verifier state: a dict, or a callable ``(pcactn) -> dict | None``
+    evaluated per request (see ``require_pca``).
     """
     try:
         from fastapi import HTTPException  # noqa: F401  (imported for a clear error if missing)
@@ -45,7 +50,8 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
             "atlas_pca.fastapi requires FastAPI. Install with: pip install 'atlas-pca[fastapi]'"
         ) from exc
 
-    _guard = require_pca(audience=audience, resolve_grant=resolve_grant, now=now)
+    _guard = require_pca(audience=audience, resolve_grant=resolve_grant, now=now, intent_policy=intent_policy,
+                         intent_v2=intent_v2)
 
     async def dependency(request: Request) -> PCAContext:
         from fastapi import HTTPException  # local so the symbol is bound at call time

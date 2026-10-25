@@ -11,7 +11,8 @@ Status mapping (mirrors the TS edge verifier):
   * 401 — no PCActn present, an undecodable one, or an unknown grant (authentication is missing/opaque)
   * 403 — a well-formed PCActn whose verdict denies (authority is insufficient)
   * 200 — verdict allows
-Every non-200 result carries a ``WWW-Authenticate: PCA ...`` challenge string.
+Every non-200 result carries a ``WWW-Authenticate: PCA ...`` challenge string built only from fixed tokens and the
+operator's own ``audience`` (never from verdict reasons or other request-derived text).
 """
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Union
@@ -23,6 +24,8 @@ PCA_HEADER = "PCA-Action"
 REALM = "pca"
 
 GrantResolver = Callable[[Optional[str]], Optional[dict]]
+# Intent Layer v2 verifier state: a dict (TS IntentV2Context), or a callable (pcactn) -> dict | None evaluated per request.
+IntentV2Source = Union[dict, Callable[[dict], Optional[dict]], None]
 
 
 @dataclass
@@ -137,12 +140,20 @@ def extract_pcactn(headers: Mapping[str, str],
 
 
 def require_pca(*, audience: str, resolve_grant: GrantResolver,
-                now: Optional[int] = None) -> Callable[..., PCAResult]:
+                now: Optional[int] = None, intent_policy: Optional[dict] = None,
+                intent_v2: IntentV2Source = None) -> Callable[..., PCAResult]:
     """Build a framework-agnostic guard.
 
     ``audience``      — this resource server's own id; the PCActn's signed ``aud`` must equal it.
     ``resolve_grant`` — ``(grant_ref) -> grant | None``; maps the PCActn's ``grant_ref`` to the root grant.
     ``now``           — epoch milliseconds for the validity window (default: wall clock at check time).
+    ``intent_policy`` — optional Intent Layer M2 policy ``{"require", "min_fidelity_ppm", "max_residual_risk_ppm"}``
+                        forwarded to ``verify_pcactn_core`` (an active policy denies a PCActn without a bound intent).
+    ``intent_v2``     — optional Intent Layer v2 verifier state + policy (``policy``, ``params``, ``schema``, ``session``,
+                        ``layers``, ``acc``, ``wb``; see ``atlas_pca.intent_v2.decide_intent_v2``): a dict, or a callable
+                        ``(pcactn) -> dict | None`` evaluated per request (the host's store lookup: session root, held
+                        grants, accumulator pre-state under its row lock, receipts, plaintext params). A callable that
+                        raises fails closed (403 ``intent_v2_context_error``).
 
     The returned callable takes ``(headers, body)`` and returns a :class:`PCAResult`.
     """
@@ -156,17 +167,39 @@ def require_pca(*, audience: str, resolve_grant: GrantResolver,
                              www_authenticate=challenge(audience, "invalid_request", desc))
 
         grant_ref = pcactn.get("grant_ref") if isinstance(pcactn, dict) else None
-        grant = resolve_grant(grant_ref)
+        # Mirrors TS requirePCA: a grant_ref that is not a string (absent, null, list, dict, number) is a malformed
+        # PCActn (401 invalid_pcactn) and never reaches the host's resolver.
+        if not isinstance(grant_ref, str):
+            return PCAResult(ok=False, status=401, pcactn=pcactn, error="malformed",
+                             www_authenticate=challenge(audience, "invalid_pcactn", "malformed PCActn"))
+        try:
+            grant = resolve_grant(grant_ref)
+        except Exception:  # noqa: BLE001 - the host's resolver failed: fail closed (TS: 403 guard error), never a 500
+            return PCAResult(ok=False, status=403, pcactn=pcactn, error="resolve_grant_error",
+                             www_authenticate=challenge(audience, "insufficient_authority",
+                                                        "grant resolution failed (fail closed)"))
         if not isinstance(grant, dict):
             return PCAResult(ok=False, status=401, pcactn=pcactn, error="unknown_grant",
                              www_authenticate=challenge(audience, "invalid_token",
                                                         "grant_ref does not resolve to a known grant"))
 
-        verdict = verify_pcactn_core(pcactn, grant, now=now, audience=audience)
+        v2 = intent_v2
+        if callable(intent_v2):
+            try:
+                v2 = intent_v2(pcactn)
+            except Exception:  # noqa: BLE001 - the host's state lookup failed: fail closed, never verify without it
+                return PCAResult(ok=False, status=403, pcactn=pcactn, error="intent_v2_context_error",
+                                 www_authenticate=challenge(audience, "insufficient_authority",
+                                                            "intent v2 verifier state unavailable (fail closed)"))
+        verdict = verify_pcactn_core(pcactn, grant, now=now, audience=audience, intent_policy=intent_policy,
+                                     intent_v2=v2)
         if verdict.allow:
             return PCAResult(ok=True, status=200, verdict=verdict, pcactn=pcactn)
         return PCAResult(ok=False, status=403, verdict=verdict, pcactn=pcactn,
                          error=verdict.reason or "insufficient_authority",
-                         www_authenticate=challenge(audience, "insufficient_authority", verdict.reason))
+                         # Never echo verdict.reason into the header: it can carry attacker-controlled text (CR/LF ->
+                         # header injection). TS requirePCA puts no reason in its challenge either; the reason stays
+                         # on ``verdict`` / ``error`` for the host's (JSON-encoded) body.
+                         www_authenticate=challenge(audience, "insufficient_authority"))
 
     return guard

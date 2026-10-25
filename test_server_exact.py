@@ -128,7 +128,7 @@ def test_guard_results_exact():
     r = _guard(audience="other")({"PCA-Action": hv}, None)
     assert (r.ok, r.status) == (False, 403)
     assert r.error == r.verdict.reason and r.error
-    assert r.www_authenticate == f'PCA realm="pca", audience="other", error="insufficient_authority", error_description={server._quote(r.verdict.reason)}'
+    assert r.www_authenticate == 'PCA realm="pca", audience="other", error="insufficient_authority"'
     # PCAResult accessors
     assert r.get("status") == 403 and r.get("nope", 7) == 7 and r["ok"] is False
     # a verdict that denies with no reason maps to "insufficient_authority"
@@ -140,7 +140,7 @@ def test_guard_results_exact():
         assert r.error == "insufficient_authority"
         assert r.www_authenticate == f'PCA realm="pca", audience="{AUD}", error="insufficient_authority"'
         got = {}
-        server.verify_pcactn_core = lambda p, g, now=None, audience=None: got.update(p=p, g=g, now=now, aud=audience) or Verdict(allow=True)
+        server.verify_pcactn_core = lambda p, g, now=None, audience=None, **_kw: got.update(p=p, g=g, now=now, aud=audience) or Verdict(allow=True)
         _guard()({"PCA-Action": hv}, None)
         assert got == {"p": PCACTN, "g": GRANT, "now": NOW, "aud": AUD}
     finally:

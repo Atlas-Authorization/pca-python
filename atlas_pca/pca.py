@@ -12,7 +12,8 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 from . import ed25519
-from .mldsa import ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES, ml_dsa65_verify
+from . import pq_backends
+from .mldsa import ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES
 
 PCACTN_VERSION = 2
 SIG_DOMAIN = b"atlas-pca/actn/v2\x00"
@@ -503,13 +504,57 @@ def _verify_b64u(pub: Any, msg: bytes, sig: Any) -> bool:
 # ---- B4 post-quantum crypto-agility (mirrors packages/pca/src/pq.ts) -----------------
 
 ED25519_SIGNATURE_BYTES = 64
-# suite name -> (sig byte length, needs pq_pk, needs pq_sig). `alg` absent == "ed25519".
+UNSUPPORTED_SUITE = "unsupported_suite"
+# The closed TS suite registry (SIG_SUITES in pq.ts), in registry order.
+REGISTERED_SUITES = (
+    "ed25519", "ml-dsa-65", "hybrid-ed25519-ml-dsa-65", "hybrid-nested-ed25519-ml-dsa-65", "slh-dsa-sha2-128f",
+    "hybrid-ed25519-slh-dsa-sha2-128f", "ml-dsa-87", "hybrid-ed25519-ml-dsa-87", "slh-dsa-sha2-256s",
+    "hybrid-ed25519-slh-dsa-sha2-256s", "fn-dsa-512", "fn-dsa-1024", "less-cat1", "hybrid-ed25519-less-cat1",
+)
+# Suite capability (packages/pca/conformance/SUITES.md): every suite this verifier can implement (pq_backends: ML-DSA via
+# dilithium-py or OpenSSL >= 3.5, SLH-DSA via OpenSSL >= 3.5, LESS via the patched reference C of sdks/pca-less-c built as a
+# shared library; pure mode, empty context). LESS's signature length is variable (pq_backends.sig_len_ok).
+# suite name -> (sig byte length, needs pq_pk, needs pq_sig, PQ key type or None, nested). `alg` absent == "ed25519".
+# nested: the PQ half signs msg || the Ed25519 signature bytes (SUF-CMA). A registered suite outside this table
+# (fn-dsa-512 / fn-dsa-1024: no trustworthy Python implementation) or one whose
+# backend is missing at runtime fails closed with the distinct reason `unsupported_suite: <alg>`.
 _SIG_SUITES = {
-    "ed25519": (ED25519_SIGNATURE_BYTES, False, False),
-    "ml-dsa-65": (ML_DSA_65_SIGNATURE_BYTES, True, False),
-    "hybrid-ed25519-ml-dsa-65": (ED25519_SIGNATURE_BYTES, True, True),
+    "ed25519": (ED25519_SIGNATURE_BYTES, False, False, None, False),
+    "ml-dsa-65": (ML_DSA_65_SIGNATURE_BYTES, True, False, "ML-DSA-65", False),
+    "hybrid-ed25519-ml-dsa-65": (ED25519_SIGNATURE_BYTES, True, True, "ML-DSA-65", False),
+    "hybrid-nested-ed25519-ml-dsa-65": (ED25519_SIGNATURE_BYTES, True, True, "ML-DSA-65", True),
+    "slh-dsa-sha2-128f": (17088, True, False, "SLH-DSA-SHA2-128f", False),
+    "hybrid-ed25519-slh-dsa-sha2-128f": (ED25519_SIGNATURE_BYTES, True, True, "SLH-DSA-SHA2-128f", False),
+    "ml-dsa-87": (4627, True, False, "ML-DSA-87", False),
+    "hybrid-ed25519-ml-dsa-87": (ED25519_SIGNATURE_BYTES, True, True, "ML-DSA-87", False),
+    "slh-dsa-sha2-256s": (29792, True, False, "SLH-DSA-SHA2-256s", False),
+    "hybrid-ed25519-slh-dsa-sha2-256s": (ED25519_SIGNATURE_BYTES, True, True, "SLH-DSA-SHA2-256s", False),
+    "less-cat1": (1329, True, False, "LESS-cat1", False),
+    "hybrid-ed25519-less-cat1": (ED25519_SIGNATURE_BYTES, True, True, "LESS-cat1", False),
 }
 _ABSENT = object()
+
+
+def suite_available(alg: Any) -> bool:
+    """True iff this verifier can verify `alg` in this runtime (its PQ backend, if any, is usable)."""
+    s = _SIG_SUITES.get(alg) if isinstance(alg, str) else None
+    return s is not None and (s[3] is None or pq_backends.available(s[3]))
+
+
+def supported_suites() -> List[str]:
+    """The capability manifest: the registered suites this verifier can verify in this runtime, in registry order."""
+    return [a for a in REGISTERED_SUITES if suite_available(a)]
+
+
+def _pq_lens(suite: str):
+    kt = _SIG_SUITES[suite][3]
+    return pq_backends.KEY_TYPES[kt] if kt is not None else (0, 0)
+
+
+def _pq_sig_ok(v: Any, key_type: str) -> bool:
+    """Canonical base64url whose decoded length is a signature length of `key_type` (fixed, or LESS's range)."""
+    b = decode_b64u_strict(v)
+    return b is not None and pq_backends.sig_len_ok(key_type, len(b))
 
 
 def _resolve_suite(p: dict):
@@ -519,9 +564,11 @@ def _resolve_suite(p: dict):
         return "ed25519", None
     if not isinstance(alg, str):
         return None, "'alg' must be a string"
-    if alg not in _SIG_SUITES:
-        return None, "unknown signature alg '%s'" % alg
-    return alg, None
+    if suite_available(alg):
+        return alg, None
+    if alg in REGISTERED_SUITES:
+        return None, "%s: %s" % (UNSUPPORTED_SUITE, alg)
+    return None, "unknown signature alg '%s'" % alg
 
 
 def validate_signature_wire(p: dict) -> Optional[str]:
@@ -529,17 +576,19 @@ def validate_signature_wire(p: dict) -> Optional[str]:
     suite, err = _resolve_suite(p)
     if suite is None:
         return err
-    sig_bytes, needs_pk, needs_sig = _SIG_SUITES[suite]
-    if decode_b64u_strict(p.get("sig"), sig_bytes) is None:
+    sig_bytes, needs_pk, needs_sig, key_type = _SIG_SUITES[suite][:4]
+    pk_len, pq_sig_len = _pq_lens(suite)
+    if not (_pq_sig_ok(p.get("sig"), key_type) if key_type is not None and not needs_sig
+            else decode_b64u_strict(p.get("sig"), sig_bytes) is not None):
         return "'sig' is not canonical base64url (%d bytes) for alg '%s'" % (sig_bytes, suite)
     if needs_pk:
-        if decode_b64u_strict(p.get("pq_pk"), ML_DSA_65_PUBLIC_KEY_BYTES) is None:
-            return "'pq_pk' is not canonical base64url (%d bytes)" % ML_DSA_65_PUBLIC_KEY_BYTES
+        if decode_b64u_strict(p.get("pq_pk"), pk_len) is None:
+            return "'pq_pk' is not canonical base64url (%d bytes)" % pk_len
     elif "pq_pk" in p:
         return "'pq_pk' must be absent for alg '%s'" % suite
     if needs_sig:
-        if decode_b64u_strict(p.get("pq_sig"), ML_DSA_65_SIGNATURE_BYTES) is None:
-            return "'pq_sig' is not canonical base64url (%d bytes)" % ML_DSA_65_SIGNATURE_BYTES
+        if not _pq_sig_ok(p.get("pq_sig"), key_type):
+            return "'pq_sig' is not canonical base64url (%d bytes)" % pq_sig_len
     elif "pq_sig" in p:
         return "'pq_sig' must be absent for alg '%s'" % suite
     return None
@@ -551,23 +600,30 @@ def validate_share_signature_wire(s: dict) -> Optional[str]:
     suite, err = _resolve_suite(s)
     if suite is None:
         return err
-    sig_bytes, _, needs_sig = _SIG_SUITES[suite]
-    if decode_b64u_strict(s.get("sig"), sig_bytes) is None:
+    sig_bytes, _, needs_sig, key_type = _SIG_SUITES[suite][:4]
+    pq_sig_len = _pq_lens(suite)[1]
+    if not (_pq_sig_ok(s.get("sig"), key_type) if key_type is not None and not needs_sig
+            else decode_b64u_strict(s.get("sig"), sig_bytes) is not None):
         return "'sig' is not canonical base64url (%d bytes) for alg '%s'" % (sig_bytes, suite)
     if needs_sig:
-        if decode_b64u_strict(s.get("pq_sig"), ML_DSA_65_SIGNATURE_BYTES) is None:
-            return "'pq_sig' is not canonical base64url (%d bytes) for alg '%s'" % (ML_DSA_65_SIGNATURE_BYTES, suite)
+        if not _pq_sig_ok(s.get("pq_sig"), key_type):
+            return "'pq_sig' is not canonical base64url (%d bytes) for alg '%s'" % (pq_sig_len, suite)
     elif "pq_sig" in s:
         return "'pq_sig' must be absent for alg '%s'" % suite
     return None
 
 
-def _ml_dsa65_verify_b64u(pk_b64u: Any, msg: bytes, sig_b64u: Any) -> bool:
-    pk = decode_b64u_strict(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)
-    sg = decode_b64u_strict(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)
-    if pk is None or sg is None:
+def _pq_verify_b64u(key_type: str, pk_b64u: Any, msg: bytes, sig_b64u: Any) -> bool:
+    pk_len = pq_backends.KEY_TYPES[key_type][0]
+    pk = decode_b64u_strict(pk_b64u, pk_len)
+    sg = decode_b64u_strict(sig_b64u)
+    if pk is None or sg is None or not pq_backends.sig_len_ok(key_type, len(sg)):
         return False
-    return ml_dsa65_verify(pk, msg, sg)
+    return pq_backends.verify(key_type, pk, msg, sg)
+
+
+def _ml_dsa65_verify_b64u(pk_b64u: Any, msg: bytes, sig_b64u: Any) -> bool:
+    return _pq_verify_b64u("ML-DSA-65", pk_b64u, msg, sig_b64u)
 
 
 class _PinnedPq:
@@ -618,14 +674,24 @@ def _verify_suite(p: dict, holder: Any, msg: bytes, pq: Optional[_PinnedPq]) -> 
     suite, _ = _resolve_suite(p)
     if suite is None:
         return False
+    _, _, needs_sig, key_type, nested = _SIG_SUITES[suite]
     sig = p.get("sig")
-    if suite == "ed25519":
+    if key_type is None:
         return _verify_b64u(holder, msg, sig)
-    if suite == "ml-dsa-65":
-        return _ml_dsa65_verify_pinned(pq, msg, sig)
-    if suite == "hybrid-ed25519-ml-dsa-65":
-        return _verify_b64u(holder, msg, sig) and _ml_dsa65_verify_pinned(pq, msg, p.get("pq_sig"))
-    return False
+    if not isinstance(pq, _PinnedPq):
+        return False
+    if not needs_sig:  # pure PQ: `sig` is the PQ signature
+        return _pq_verify_b64u(key_type, pq.key, msg, sig)
+    # hybrid: the cheap Ed25519 half first (R6-API-04), then the PQ `pq_sig` (nested: over msg || Ed25519 sig bytes)
+    if not _verify_b64u(holder, msg, sig):
+        return False
+    pq_msg = msg
+    if nested:
+        ed_sig = decode_b64u_strict(sig, ED25519_SIGNATURE_BYTES)
+        if ed_sig is None:
+            return False
+        pq_msg = msg + ed_sig
+    return _pq_verify_b64u(key_type, pq.key, pq_msg, p.get("pq_sig"))
 
 
 def verify_leaf_suite(p: dict, holder: Any, msg: bytes) -> bool:
@@ -661,7 +727,7 @@ def _signable_hop_body(c: dict):
     body = _body_of(c)
     if suite != "ed25519":
         body["alg"] = suite
-        _, needs_pk, _ = _SIG_SUITES[suite]
+        needs_pk = _SIG_SUITES[suite][1]
         if needs_pk and isinstance(c.get("pq_pk"), str):
             body["pq_pk"] = c["pq_pk"]
     return body, None
@@ -746,15 +812,21 @@ def caveat_limit_exceeded(chain: list) -> bool:
 
 ROOT_PQ_PIN_REASON = ("hop 0: root suite '%s' needs a PQ key pinned for the root issuer (policy.pqPins) or the verifier's stored grant "
                       "(policy.trustedRoot); the root's own pq_pk proves nothing about who issued it (R3-01)")
+ROOT_PQ_PIN_MISMATCH_REASON = ("hop 0: root suite '%s': the server-side PQ pin for the root issuer (policy.pqPins) does not match "
+                               "the stored grant's pq_pk (fail closed)")
 
 
 def _resolve_root_pq(root: dict, pq_pins: Any, trusted_root: Any):
     """The root hop has no parent holding a `holder_pq` commitment, so a non-ed25519 root's PQ key must come from a
     verifier-side authority: the verifier's stored copy of this very grant (`trusted_root`, same content hash) or a pin for
-    `root.issuer`. Returns (key_or_None, reason_or_None); mirrors `rootPq` in capability.ts."""
-    suite, _ = _resolve_suite(root)
-    if suite is None or not _SIG_SUITES[suite][1]:
+    `root.issuer`. Returns (key_or_None, reason_or_None); mirrors `rootPq` in capability.ts.
+    The decision is keyed on the REGISTERED suite (resolveSigAlg in the reference), not on whether this runtime has its
+    backend: a PQ root without a verifier-side authority gets the pin reason on every host; a root that passes it is still
+    refused fail-closed (unsupported_suite) at the signature check when the backend is missing."""
+    alg = root.get("alg", "ed25519")
+    if not isinstance(alg, str) or alg not in REGISTERED_SUITES or alg == "ed25519":
         return None, None
+    suite = alg
     pk = root.get("pq_pk")
     trusted = None
     if trusted_root is not None and isinstance(pk, str):
@@ -763,6 +835,10 @@ def _resolve_root_pq(root: dict, pq_pins: Any, trusted_root: Any):
                 trusted = pk
         except Exception:
             trusted = None
+    # 0.4.2 fail closed: with the stored grant AND a pin for the issuer, both must agree (the grant never overrides a pin).
+    issuer = root.get("issuer")
+    if trusted is not None and isinstance(pq_pins, dict) and isinstance(issuer, str) and issuer in pq_pins and pq_pins[issuer] != pk:
+        return None, ROOT_PQ_PIN_MISMATCH_REASON % suite
     key = _resolve_pq_key(root.get("issuer"), pk, pq_pins=pq_pins, trusted_pk=trusted)
     if key is None:
         return None, ROOT_PQ_PIN_REASON % suite
@@ -862,6 +938,10 @@ PCACTN_OPTIONAL_FIELDS = (
     "threshold", "zk_compliance", "bond_ref",
     # B4 crypto-agility (additive): absent `alg` == "ed25519" and validates exactly as today.
     "alg", "pq_pk", "pq_sig",
+    # Intent Layer M2 (additive, SIGNED): the `envelope.intent` binding (see validate_intent_wire).
+    "intent",
+    # Intent Layer v2 (additive, SIGNED): the session member (see validate_intent_session_wire, conformance rule 13).
+    "intent_session",
 )
 _KNOWN = frozenset(PCACTN_REQUIRED_FIELDS + PCACTN_OPTIONAL_FIELDS)
 
@@ -1013,6 +1093,14 @@ def validate_wire_v2(p: Any) -> Optional[str]:
             return "'tool_binding' is not canonical base64url (32 bytes)"
         if "progress_step" in p and not isinstance(p["progress_step"], dict):
             return "'progress_step' must be an object"
+        if "intent" in p:
+            intent_err = validate_intent_wire(p["intent"])
+            if intent_err is not None:
+                return intent_err
+        if "intent_session" in p:
+            session_err = validate_intent_session_wire(p["intent_session"])
+            if session_err is not None:
+                return session_err
         if "prohibition_evidence" in p and not isinstance(p["prohibition_evidence"], (dict, list)):
             return "'prohibition_evidence' must be an object or array"
         if "threshold" in p:
@@ -1032,6 +1120,283 @@ def validate_wire_v2(p: Any) -> Optional[str]:
         return None
     except Exception as e:
         return "malformed: %s" % e
+
+
+# ---- Intent Layer M2: the signed `envelope.intent` binding -------------------------------------------------------
+#
+# Normative rules: packages/pca/src/intent-binding.ts and conformance/README.md "Intent binding". The optional top-level
+# `intent` slot is SIGNED (part of the canonical body). When present it is an object with EXACTLY the members below
+# (else `wire` fails). The `intent` check runs after `counter` and is reported iff the PCActn carries `intent` OR the
+# verifier's intent policy is ACTIVE; otherwise the verdict is the pre-M2 one.
+
+INTENT_GOAL_PREFIX = "pca-intent:v1:"
+# Intent Layer v2 session grants (G_0 and the delta grants D_k): `pca-intent:v2:<session>:<map_digest>` (rule 13).
+INTENT_GOAL_V2_PREFIX = "pca-intent:v2:"
+# Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
+INTENT_GOAL_V2C_PREFIX = "pca-intent:v2c:"
+MAP_FORM_COMMIT = "commit"
+INTENT_GOAL_COMMIT_DOMAIN = "atlas-pca/goal/v1\x00"
+PPM_ONE = 1_000_000
+MAX_INTENT_GOAL_SALT_LEN = 128
+ENVELOPE_INTENT_FIELDS = ("ref", "map_digest", "goal_salt", "fidelity_ppm", "residual_risk_ppm")
+
+
+def validate_intent_wire(v: Any) -> Optional[str]:
+    """Wire validation of the `intent` slot. None = well-formed, else a short reason. Never raises."""
+    if not isinstance(v, dict):
+        return "'intent' must be an object"
+    for k in v:
+        if k not in ENVELOPE_INTENT_FIELDS:
+            return "unknown field 'intent.%s'" % k
+    for k in ENVELOPE_INTENT_FIELDS:
+        if k not in v:
+            return "missing field 'intent.%s'" % k
+    if decode_b64u_strict(v["ref"], 32) is None:
+        return "'intent.ref' is not canonical base64url (32 bytes)"
+    if decode_b64u_strict(v["map_digest"], 32) is None:
+        return "'intent.map_digest' is not canonical base64url (32 bytes)"
+    gs = v["goal_salt"]
+    if not _is_str(gs) or gs == "" or _blen(gs) > MAX_INTENT_GOAL_SALT_LEN:
+        return "'intent.goal_salt' must be a non-empty string (<= 128 UTF-8 bytes)"
+    fp = v["fidelity_ppm"]
+    if not _is_safe_int(fp) or not (0 <= fp <= PPM_ONE):
+        return "'intent.fidelity_ppm' must be a safe integer in [0, 1000000]"
+    rr = v["residual_risk_ppm"]
+    if not _is_safe_int(rr) or rr < 0:
+        return "'intent.residual_risk_ppm' must be a non-negative safe integer"
+    return None
+
+
+def intent_goal(ref: str, map_digest: Optional[str] = None) -> str:
+    """The goal string that binds a grant to an intent statement (and optionally an Intent Map)."""
+    return INTENT_GOAL_PREFIX + ref + (":" + map_digest if map_digest else "")
+
+
+def intent_goal_commit(ref: str, map_digest: str, goal_salt: str, session: Optional[str] = None,
+                       map_form: Optional[str] = None) -> str:
+    """The goal commitment an `envelope.intent` claims the root grant carries. With `session` (Intent Layer v2, rule 13
+    amends rule 12 step 2) the goal is `"pca-intent:v2:" + session + ":" + map_digest` instead of the v1 goal; with
+    `map_form` "commit" too (rule 19, a committed map) it is `"pca-intent:v2c:" + session + ":" + map_digest`."""
+    if session is not None:
+        goal = (INTENT_GOAL_V2C_PREFIX if map_form == MAP_FORM_COMMIT else INTENT_GOAL_V2_PREFIX) + session + ":" + map_digest
+    else:
+        goal = intent_goal(ref, map_digest)
+    return hash_canonical({"d": INTENT_GOAL_COMMIT_DOMAIN, "goal": goal, "salt": goal_salt})
+
+
+def intent_policy_active(policy: Any) -> bool:
+    """True iff the policy is active: `require` is exactly True, or either threshold key is present."""
+    return isinstance(policy, dict) and (
+        policy.get("require") is True or "min_fidelity_ppm" in policy or "max_residual_risk_ppm" in policy)
+
+
+def root_goal_commit(grant: Any) -> Optional[str]:
+    """The root grant's goal commitment: the FIRST `envelope` caveat's string `goal_commit`, else None."""
+    if not isinstance(grant, dict) or not isinstance(grant.get("caveats"), list):
+        return None
+    for c in grant["caveats"]:
+        if isinstance(c, dict) and c.get("type") == "envelope":
+            gc = c.get("goal_commit")
+            return gc if isinstance(gc, str) else None
+    return None
+
+
+def decide_intent_binding(intent: Any, grant: Any, policy: Any = None, session: Optional[str] = None,
+                          map_form: Optional[str] = None) -> "tuple[str, Optional[str]]":
+    """The `intent` check (rules 0-4). `intent` is the wire-validated slot (None when absent). `session` is the
+    wire-valid `intent_session.session` of the PCActn (Intent Layer v2: the v2 goal opens the commitment), else None;
+    `map_form` its `intent_session.map_form` (rule 19: "commit" selects the v2c goal).
+    Returns ("absent", None), ("pass", None) or ("fail", reason). Never raises."""
+    active = intent_policy_active(policy)
+    if intent is None and not active:
+        return "absent", None
+    try:
+        # A threshold is valid iff its NUMERIC VALUE is a safe integer >= 0 (int, or an integral float such as 950000.0 /
+        # 1e6; not bool, -0.0, NaN/Inf, a fraction or > 2^53-1). Unset bounds are None. Only an active policy has keys.
+        pol = policy if active else {}
+        lo = pol["min_fidelity_ppm"] if "min_fidelity_ppm" in pol else None
+        hi = pol["max_residual_risk_ppm"] if "max_residual_risk_ppm" in pol else None
+        if ("min_fidelity_ppm" in pol and not (_is_safe_int(lo) and lo >= 0)) or \
+                ("max_residual_risk_ppm" in pol and not (_is_safe_int(hi) and hi >= 0)):
+            return "fail", "intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)"
+        if intent is None:
+            return "fail", "this verifier requires an intent binding but the PCActn carries none"
+        commit = root_goal_commit(grant)
+        if commit is None:
+            return "fail", "the root grant carries no envelope goal commitment to bind the intent to"
+        if intent_goal_commit(intent["ref"], intent["map_digest"], intent["goal_salt"], session, map_form) != commit:
+            return "fail", "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"
+        if lo is not None and intent["fidelity_ppm"] < int(lo):
+            return "fail", "intent fidelity %d ppm is below the policy minimum %d" % (intent["fidelity_ppm"], int(lo))
+        if hi is not None and intent["residual_risk_ppm"] > int(hi):
+            return "fail", "intent residual risk %d ppm exceeds the policy maximum %d" % (intent["residual_risk_ppm"], int(hi))
+        return "pass", None
+    except Exception as e:  # noqa: BLE001 - fail closed
+        return "fail", "intent binding error (fail closed): %s" % e
+
+
+# ---- JS object semantics shared by the Intent Layer v2 rules ----------------------------------------------------------
+
+_ARRAY_INDEX = re.compile(r"0|[1-9][0-9]*")
+
+
+def _js_keys(o: dict) -> List[str]:
+    """`Object.keys(o)` order: canonical array-index keys ("0".."4294967294", no leading zeros) ascending by value, then
+    the other keys in insertion order (JSON text order). Only the first-failure reason can depend on it."""
+    idx, rest = [], []
+    for k in o:
+        if isinstance(k, str) and _ARRAY_INDEX.fullmatch(k) and int(k) <= 4294967294:
+            idx.append(k)
+        else:
+            rest.append(k)
+    idx.sort(key=int)
+    return idx + rest
+
+
+def _js_nonneg_int(v: Any) -> bool:
+    """TS `Number.isSafeInteger(v) && v >= 0 && !Object.is(v, -0)` (a bool is not a number; 5.0 is the number 5)."""
+    return _is_safe_int(v) and v >= 0
+
+
+def _b32(v: Any) -> bool:
+    return decode_b64u_strict(v, 32) is not None
+
+
+# ---- Intent Layer v2: the signed PCActn member `intent_session` (wire, rule 13) ---------------------------------------
+
+MAX_SESSION_SEQ = 2_147_483_647
+MAX_IS_ACC = 16
+MAX_IS_FACTS = 16
+MAX_IS_PROV_PATHS = 32
+MAX_IS_PROV_REFS = 8
+MAX_IS_CLASSES = 8
+MAX_IS_LABELS = 16
+MAX_IS_STRING_BYTES = 256
+INTENT_SESSION_FIELDS = ("session", "root", "seq", "schema", "acc", "facts", "offer_set", "prov", "classes", "labels",
+                         "map_form")
+ACC_ID_RE = re.compile(r"[A-Za-z0-9_]{1,64}")  # always used with fullmatch
+_PROV_PATH_RE = re.compile(r"action\.params\.[A-Za-z0-9_]{1,64}")  # always used with fullmatch
+
+
+def _short_str(v: Any) -> bool:
+    return isinstance(v, str) and len(v) > 0 and not _has_surrogate(v) and _blen(v) <= MAX_IS_STRING_BYTES
+
+
+def _digest_list_error(v: Any, name: str, mx: int) -> Optional[str]:
+    if not isinstance(v, list) or len(v) > mx:
+        return "'intent_session.%s' must be an array of at most %d digests" % (name, mx)
+    for x in v:
+        if not _b32(x):
+            return "'intent_session.%s' entries must be canonical base64url (32 bytes)" % name
+    if len(set(v)) != len(v):
+        return "'intent_session.%s' entries must be distinct" % name
+    return None
+
+
+def validate_intent_session_wire(v: Any) -> Optional[str]:
+    """Wire validation of `intent_session` (part of the terminal `wire` check; mirrors validateIntentSessionWire).
+    Closed member set INTENT_SESSION_FIELDS; required `session`, `root`, `schema` (canonical base64url, 32 bytes each)
+    and `seq` (safe integer in [0, 2^31-1]); optional `acc` (<= 16 objects {id, post, receipt?}, distinct ids, post a
+    non-negative safe integer, receipt a 32-byte digest), `facts` / `classes` / `labels` (<= 16 / 8 / 16 distinct
+    32-byte digests), `offer_set` (32-byte digest), `prov` (<= 32 entries `action.params.<name>` -> 1..8 non-empty
+    strings of at most 256 UTF-8 bytes, no lone surrogates). None = well-formed, else a short reason. Never raises."""
+    if not isinstance(v, dict):
+        return "'intent_session' must be an object"
+    for k in _js_keys(v):
+        if k not in INTENT_SESSION_FIELDS:
+            return "unknown field 'intent_session.%s'" % k
+    for k in ("session", "root", "seq", "schema"):
+        if k not in v:
+            return "missing field 'intent_session.%s'" % k
+    for k in ("session", "root", "schema"):
+        if not _b32(v[k]):
+            return "'intent_session.%s' is not canonical base64url (32 bytes)" % k
+    if not _js_nonneg_int(v["seq"]) or v["seq"] > MAX_SESSION_SEQ:
+        return "'intent_session.seq' must be a safe integer in [0, 2147483647]"
+    if "acc" in v:
+        acc = v["acc"]
+        if not isinstance(acc, list) or len(acc) > MAX_IS_ACC:
+            return "'intent_session.acc' must be an array of at most %d entries" % MAX_IS_ACC
+        ids = set()
+        for i, a in enumerate(acc):
+            if not isinstance(a, dict):
+                return "'intent_session.acc[%d]' must be an object" % i
+            for k in _js_keys(a):
+                if k not in ("id", "post", "receipt"):
+                    return "unknown field 'intent_session.acc[%d].%s'" % (i, k)
+            aid = a.get("id")
+            if not isinstance(aid, str) or ACC_ID_RE.fullmatch(aid) is None:
+                return "'intent_session.acc[%d].id' must match [A-Za-z0-9_]{1,64}" % i
+            if aid in ids:
+                return "'intent_session.acc' ids must be distinct"
+            ids.add(aid)
+            if not _js_nonneg_int(a.get("post")):
+                return "'intent_session.acc[%d].post' must be a non-negative safe integer" % i
+            if "receipt" in a and not _b32(a["receipt"]):
+                return "'intent_session.acc[%d].receipt' is not canonical base64url (32 bytes)" % i
+    if "facts" in v:
+        e = _digest_list_error(v["facts"], "facts", MAX_IS_FACTS)
+        if e:
+            return e
+    if "offer_set" in v and not _b32(v["offer_set"]):
+        return "'intent_session.offer_set' is not canonical base64url (32 bytes)"
+    if "prov" in v:
+        prov = v["prov"]
+        if not isinstance(prov, dict) or len(prov) > MAX_IS_PROV_PATHS:
+            return "'intent_session.prov' must be an object of at most %d entries" % MAX_IS_PROV_PATHS
+        for path in _js_keys(prov):
+            refs = prov[path]
+            if _PROV_PATH_RE.fullmatch(path) is None:
+                return "'intent_session.prov' key '%s' is not action.params.<name>" % path
+            if not isinstance(refs, list) or len(refs) == 0 or len(refs) > MAX_IS_PROV_REFS or not all(_short_str(x) for x in refs):
+                return "'intent_session.prov.%s' must be 1..%d non-empty strings of at most %d UTF-8 bytes" % (
+                    path, MAX_IS_PROV_REFS, MAX_IS_STRING_BYTES)
+    if "classes" in v:
+        e = _digest_list_error(v["classes"], "classes", MAX_IS_CLASSES)
+        if e:
+            return e
+    if "labels" in v:
+        e = _digest_list_error(v["labels"], "labels", MAX_IS_LABELS)
+        if e:
+            return e
+    if "map_form" in v and not (isinstance(v["map_form"], str) and v["map_form"] == MAP_FORM_COMMIT):
+        return "'intent_session.map_form' must be \"commit\" when present"
+    return None
+
+
+# ---- Intent Layer v2: the session grant caveat {type: "intent_session", session, seq, root, prev?} (rule 13) ----------
+
+INTENT_SESSION_CAVEAT = "intent_session"
+
+
+def intent_session_caveat_error(c: Any) -> Optional[str]:
+    """Shape of an `intent_session` grant caveat: exactly {type, session, seq, root, prev?}, prev present iff seq > 0
+    (mirrors intentSessionCaveatError). None = well-formed. Never raises."""
+    if not isinstance(c, dict) or c.get("type") != INTENT_SESSION_CAVEAT:
+        return "not an intent_session caveat"
+    for k in _js_keys(c):
+        if k not in ("type", "session", "seq", "root", "prev"):
+            return "intent_session caveat: unknown member '%s'" % k
+    if not _b32(c.get("session")) or not _b32(c.get("root")):
+        return "intent_session caveat: session and root must be canonical base64url (32 bytes)"
+    seq = c.get("seq")
+    if not _js_nonneg_int(seq) or seq > MAX_SESSION_SEQ:
+        return "intent_session caveat: seq must be a safe integer in [0, 2147483647]"
+    if (seq == 0) != ("prev" not in c):
+        return "intent_session caveat: prev is present exactly when seq > 0"
+    if "prev" in c and not _b32(c["prev"]):
+        return "intent_session caveat: prev must be canonical base64url (32 bytes)"
+    return None
+
+
+def grant_session_caveat(grant: Any) -> Optional[dict]:
+    """The FIRST caveat of `grant` whose type is `intent_session` (as is), else None."""
+    if not isinstance(grant, dict) or not isinstance(grant.get("caveats"), list):
+        return None
+    for c in grant["caveats"]:
+        if isinstance(c, dict) and isinstance(c.get("type"), str) and c["type"] == INTENT_SESSION_CAVEAT:
+            return c
+    return None
 
 
 # ---- PCActn --------------------------------------------------------------------------
@@ -1202,18 +1567,27 @@ class Verdict:
 
 
 def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[int] = None,
-                       audience: Optional[str] = None, allowed_suites=None) -> Verdict:
+                       audience: Optional[str] = None, allowed_suites=None,
+                       intent_policy: Optional[dict] = None, intent_v2: Optional[dict] = None) -> Verdict:
     """Verify a v2 PCActn. `p` is a parsed object OR raw JSON text/bytes (which goes through the strict profile;
     a parse failure is a `wire` failure). `audience` is this verifier's own id; omitting it fails closed.
     `now` is epoch milliseconds (default: wall clock). Never raises (R6-05: TOTAL on any input, including the
-    pre-wire parse of hostile bytes)."""
+    pre-wire parse of hostile bytes). `intent_policy` (Intent Layer M2) is an optional dict
+    {"require": bool, "min_fidelity_ppm": int, "max_residual_risk_ppm": int} (all optional); the `intent` check is
+    reported iff the PCActn carries `intent` or the policy is active (`require` is True or a threshold key is set).
+    `intent_v2` (Intent Layer v2, rules 13-19) is the verifier state + policy dict (TS IntentV2Context: `policy`, `params`,
+    `schema: {docs, keys}`, `session: {root, grants, revocation: {epoch, revoked}, revocation_last}`, `layers`,
+    `acc: {state, monitors, receipts, last_seq, sequencer_keys, keyset_versions}`, `map: {disclosure}`,
+    `wb: {artifacts, policy}`); the v2 checks `schema`, `intent_session`, `layers`, `accumulators`, `map`, `facts`,
+    `provenance`, `classes` follow `intent`, each reported only under its condition (see
+    atlas_pca.intent_v2.decide_intent_v2), and `allow` requires every reported one."""
     try:
-        return _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites)
+        return _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy, intent_v2)
     except Exception as e:  # noqa: BLE001 - totality: a residual fault on hostile input is a wire refusal
         return Verdict(False, {"wire": False}, "wire: malformed input (%s)" % type(e).__name__)
 
 
-def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites) -> Verdict:
+def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy=None, intent_v2=None) -> Verdict:
     if isinstance(p, (str, bytes, bytearray)):
         if artifact_too_large(p):  # FIRST: before any parsing
             return Verdict(False, {"wire": False}, "wire: %s" % ARTIFACT_SIZE_REASON)
@@ -1311,6 +1685,24 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites) -> Ve
             checks["counter"] = True
         else:
             fail("counter", "not a non-negative safe integer")
+
+        # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
+        # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
+        session = p["intent_session"]["session"] if "intent_session" in p else None
+        map_form = p["intent_session"].get("map_form") if "intent_session" in p else None  # rule 19: the v2c goal
+        status, why = decide_intent_binding(p.get("intent"), grant, intent_policy, session, map_form)
+        if status == "pass":
+            checks["intent"] = True
+        elif status == "fail":
+            fail("intent", why)
+        # Intent Layer v2: `schema` (14), `intent_session` (13), `layers` (V5), `accumulators` (15), `map` (19), then the W-B unit
+        # `facts` / `provenance` / `classes` (16-18); each reported only under its condition (see intent_v2.py).
+        from .intent_v2 import decide_intent_v2  # deferred: intent_v2 imports this module
+        for c in decide_intent_v2(p, grant, intent_v2, now)["checks"]:
+            if c["ok"]:
+                checks[c["name"]] = True
+            else:
+                fail(c["name"], c.get("reason") or "rejected")
     except Exception as e:  # malformed input never raises; it simply denies
         if reason[0] is None:
             reason[0] = "malformed PCActn: %s" % e
@@ -1422,6 +1814,9 @@ def _caveat_satisfied(cv: Any, ctx: Any) -> bool:
     if t == "budget_alloc":
         lim = _fin(cv.get("limit"))
         return lim is not None and lim >= 0
+    if t == INTENT_SESSION_CAVEAT:
+        # Intent Layer v2 session binding (rule 13): no per-action constraint here; satisfied iff well-formed.
+        return intent_session_caveat_error(cv) is None
     return False  # envelope, note, resource_prefix, predicates, tool_schema, unknown: fail closed
 
 
@@ -1431,7 +1826,8 @@ def evaluate_caveats(caveats: Any, ctx: Any) -> "tuple[bool, list]":
     caveat is satisfied; `failed` lists the unsatisfied caveats' `type` (``"<malformed>"`` when it is not a string), in
     order. A non-list => (False, ["<malformed caveats>"]). Built-in types: max_spend {usd} (needs action.params.amount,
     currency absent or "usd"/"USD"), expires, not_before, rate, max_blast_radius, reversibility_max, delegation_depth,
-    budget_alloc; every other type is unsatisfied. Total: never raises."""
+    budget_alloc, intent_session (Intent Layer v2: satisfied iff well-formed; needs a finite `now` like every type but
+    max_spend); every other type is unsatisfied. Total: never raises."""
     if not isinstance(caveats, list):
         return False, ["<malformed caveats>"]
     failed = []

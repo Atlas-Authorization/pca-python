@@ -5,7 +5,7 @@ policy-gated. A tool only runs when the agent carries a valid, in-plan, resource
 that action. The adapter delegates all verification to [`atlas-pca`](https://pypi.org/project/atlas-pca/)
 and reimplements no cryptography.
 
-> Status: **0.4.1, unaudited.**
+> Status: **0.4.2, unaudited.**
 
 ### What is tested
 
@@ -19,7 +19,7 @@ Not covered: other framework versions (only the pinned one is exercised), live m
 pip install atlas-pca-google-adk
 ```
 
-This installs `atlas-pca>=0.4.1,<0.5` as a dependency.
+This installs `atlas-pca>=0.4.2,<0.5` as a dependency.
 
 ## Use
 
