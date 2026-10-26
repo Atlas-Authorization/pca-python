@@ -15,8 +15,11 @@ def test_intent_arguments_are_forwarded(monkeypatch):
 
     monkeypatch.setattr(fa, "require_pca", fake)
     res = lambda *a: None
+    fa.RequirePCA(audience="aud", resolve_grant=res, signature_only=True)
+    assert seen == {"audience": "aud", "resolve_grant": res, "now": None, "intent_policy": None, "intent_v2": None,
+                    "signature_only": True}
     fa.RequirePCA(audience="aud", resolve_grant=res)
-    assert seen == {"audience": "aud", "resolve_grant": res, "now": None, "intent_policy": None, "intent_v2": None}
+    assert seen["signature_only"] is False  # the default is the full authorize pipeline
     pol, v2 = {"p": 1}, {"v": 2}
-    fa.RequirePCA(audience="aud", resolve_grant=res, now=5, intent_policy=pol, intent_v2=v2)
+    fa.RequirePCA(audience="aud", resolve_grant=res, now=5, intent_policy=pol, intent_v2=v2, signature_only=True)
     assert seen["now"] == 5 and seen["intent_policy"] is pol and seen["intent_v2"] is v2

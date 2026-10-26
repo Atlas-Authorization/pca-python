@@ -1,0 +1,354 @@
+name: Release
+
+# Publishes atlas-pca (repo root) and then the framework adapters (packages/<framework>) to PyPI with Trusted Publishing
+# and PEP 740 attestations, attests every distribution, and creates the GitHub Release for the tag with the sdists,
+# wheels, SHA256SUMS and the changelog section.
+#
+#   tag push v*                  the real release (the tag must match every pyproject version)
+#   tag push v*dry-run*          a dry run (e.g. v0.4.3-dry-run.1): everything except the PyPI upload; the Release is a draft
+#   workflow_dispatch            tag + dry_run (default true), to (re-)run for an existing tag
+#
+# Builds are reproducible: SOURCE_DATE_EPOCH is the tagged commit's time and the sdists are rewritten with neutral tar
+# owner fields (no account name) and sorted members. Re-runs are idempotent: files already on PyPI are skipped.
+# Release gates before anything is published: each distribution's dependencies are resolved (Linux, CPython 3.12, all
+# extras) into a CycloneDX SBOM (merged into one, attested and bound to every distribution) and audited with pip-audit
+# (a high, critical or unrated finding fails unless .github/vuln-allowlist.json has a reviewed, unexpired entry for it);
+# then the security evidence report (CI, mutation and cross-language runs with run ids, SBOM, audit, exceptions).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release, e.g. v0.4.3'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run: no PyPI upload; the GitHub Release is a draft'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_AUDIT: '2.10.1'       # pinned audit / SBOM tools
+  CYCLONEDX_PY: '7.5.0'
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build, check, attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Release metadata
+        id: meta
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          DISPATCH_DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z[-pre]"; exit 1; }
+          DRY=false
+          if [ "$DISPATCH_DRY" = true ] || [[ "$TAG" == *dry-run* ]]; then DRY=true; fi
+          VERSION="${TAG#v}"
+          PRE=false; [[ "$VERSION" == *-* ]] && PRE=true
+          { echo "tag=$TAG"; echo "version=$VERSION"; echo "dry_run=$DRY"; echo "prerelease=$PRE"; } >> "$GITHUB_OUTPUT"
+          echo "### Release $TAG (dry run: $DRY)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.meta.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Every package declares its maturity tier (manifest + README header)
+        run: node .github/scripts/maturity-check.mjs
+      - name: Every distribution is at the tag's version (lockstep)
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          WARN: ${{ steps.meta.outputs.dry_run }}
+        run: |
+          python - <<'PY'
+          import glob, os, sys, tomllib
+          want, warn = os.environ["VERSION"], os.environ["WARN"] == "true"
+          files = ["pyproject.toml"] + sorted(glob.glob("packages/*/pyproject.toml"))
+          off = []
+          for f in files:
+              p = tomllib.load(open(f, "rb"))["project"]
+              if p["version"] != want:
+                  off.append("%s@%s (%s)" % (p["name"], p["version"], f))
+          if len(files) != 8:
+              off.append("expected 8 distributions (atlas-pca + 7 adapters), found %d" % len(files))
+          for o in off:
+              print(("::warning::" if warn else "::error::") + "not at %s: %s" % (want, o))
+          sys.exit(1 if off and not warn else 0)
+          PY
+      - name: Build sdists + wheels (atlas-pca first, then the adapters)
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          uv build --sdist --wheel --out-dir dist/core .
+          for p in packages/*/; do uv build --sdist --wheel --out-dir dist/adapters "$p"; done
+          ls -l dist/core dist/adapters
+      - name: Neutral, reproducible sdists (no account name in the tar headers)
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          python .github/scripts/normalize-sdist.py dist/*/*.tar.gz
+          python .github/scripts/normalize-sdist.py --check dist/*/*.tar.gz
+      - name: Metadata check
+        run: uvx twine check --strict dist/*/*
+      - name: Leak scan (secrets, private keys, build-machine paths)
+        run: node .github/scripts/release-scan.mjs dist/*/*
+      - name: Resolve each distribution's dependencies (Linux x86_64, CPython 3.12, all extras; atlas-pca from this build)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gates/py"
+          for pp in pyproject.toml packages/*/pyproject.toml; do
+            read -r name ver < <(python -c 'import sys,tomllib; p=tomllib.load(open(sys.argv[1],"rb"))["project"]; print(p["name"], p["version"])' "$pp")
+            uv pip compile "$pp" --all-extras --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \
+              --find-links dist/core --no-header --no-annotate --quiet -o "$RUNNER_TEMP/gates/py/$name.txt"
+            echo "$name $ver" >> "$RUNNER_TEMP/gates/py/dists.txt"
+            echo "$name $ver: $(grep -c '==' "$RUNNER_TEMP/gates/py/$name.txt") pinned dependencies"
+          done
+          { echo "python=$(python --version | cut -d' ' -f2)"; echo "uv=$(uv --version | cut -d' ' -f2)"; echo "pip-audit=$PIP_AUDIT"; echo "cyclonedx-py=$CYCLONEDX_PY"; } > "$RUNNER_TEMP/gates/toolchain.txt"
+      - name: SBOM (CycloneDX JSON, one part per distribution, merged)
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          mkdir -p dist/sbom
+          parts=()
+          while read -r name ver; do
+            uvx --from "cyclonedx-bom==$CYCLONEDX_PY" cyclonedx-py requirements "$RUNNER_TEMP/gates/py/$name.txt" \
+              --of JSON --sv 1.5 --output-reproducible -o "$RUNNER_TEMP/gates/py/$name.cdx.json"
+            parts+=(--part "$name@$ver=$RUNNER_TEMP/gates/py/$name.cdx.json")
+          done < "$RUNNER_TEMP/gates/py/dists.txt"
+          node .github/scripts/sbom-merge.mjs --name "atlas-pca (PyPI)" --version "${{ steps.meta.outputs.version }}" --purl-type pypi \
+            --out dist/sbom/sbom-pypi.cdx.json "${parts[@]}"
+      - name: Dependency vulnerability gate (pip-audit per distribution; high / critical / unrated fail unless allowlisted)
+        run: |
+          set -uo pipefail
+          reports=()
+          while read -r name _; do
+            # this release's own distributions are not on PyPI yet; they are audited through their dependencies
+            grep -viE '^atlas-pca(-[a-z0-9-]+)?==' "$RUNNER_TEMP/gates/py/$name.txt" > "$RUNNER_TEMP/gates/py/$name.audit.txt"
+            uvx "pip-audit==$PIP_AUDIT" -r "$RUNNER_TEMP/gates/py/$name.audit.txt" --no-deps --disable-pip --progress-spinner off \
+              --format json -o "$RUNNER_TEMP/gates/py/$name.pip-audit.json"
+            echo "pip-audit $name exited $? (1 = it found something; the gate below decides)"
+            reports+=(--report "$RUNNER_TEMP/gates/py/$name.pip-audit.json")
+          done < "$RUNNER_TEMP/gates/py/dists.txt"
+          # pip-audit rates nothing: --osv takes each finding's severity from its OSV record; unrated stays blocking
+          node .github/scripts/vuln-gate.mjs --ecosystem pypi "${reports[@]}" --osv --allowlist .github/vuln-allowlist.json \
+            --out "$RUNNER_TEMP/gates/vuln-pypi.json"
+      - name: SHA256SUMS (flat file names, as they appear on the Release)
+        run: |
+          set -euo pipefail
+          for f in dist/*/*; do (cd "$(dirname "$f")" && sha256sum "$(basename "$f")"); done > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+      - name: Build-provenance attestation for every distribution and the SBOM
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*/*
+      - name: SBOM attestation (binds the SBOM to every distribution)
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: |
+            dist/core/*
+            dist/adapters/*
+          sbom-path: dist/sbom/sbom-pypi.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-gates
+          path: ${{ runner.temp }}/gates/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  evidence:
+    name: security evidence report
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read        # the gate runs and their artifacts
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build.outputs.tag }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-release
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-gates
+          path: ${{ runner.temp }}/gates
+      # A real release waits up to 40 min for gate runs still in progress at the release commit (CI also runs on the tag);
+      # after that it records them as running and uses the release-candidate branch run. A real release stops here if a
+      # required gate has no passing run, an audit failed or the SBOM is missing (--strict).
+      - name: Report (markdown + JSON)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DRY: ${{ needs.build.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          strict=(); [ "$DRY" = true ] || strict=(--strict)   # a real release fails here on a missing / failed gate
+          awk '{ printf "%s{\"name\":\"%s\",\"version\":\"%s\"}", (NR > 1 ? "," : "["), $1, $2 } END { print "]" }' \
+            "$RUNNER_TEMP/gates/py/dists.txt" > "$RUNNER_TEMP/packages.json"
+          node .github/scripts/release-evidence.mjs --config .github/evidence-gates.json --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
+            --version "$VERSION" --commit "$(git rev-parse HEAD)" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --dry-run "$DRY" \
+            --packages "$RUNNER_TEMP/packages.json" --sums "$RUNNER_TEMP/release/SHA256SUMS" --sbom "$RUNNER_TEMP/release/sbom/sbom-pypi.cdx.json" \
+            --vuln "$RUNNER_TEMP/gates/vuln-pypi.json" --toolchain "$RUNNER_TEMP/gates/toolchain.txt" --wait-minutes "$([ "$DRY" = true ] && echo 0 || echo 40)" \
+            --out-dir "$RUNNER_TEMP/evidence" "${strict[@]}"
+          cd "$RUNNER_TEMP/evidence" && sha256sum -- security-evidence-* > SHA256SUMS.evidence
+      - name: Build-provenance attestation for the report
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ runner.temp }}/evidence/security-evidence-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-evidence
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-pypi:
+    name: publish to PyPI${{ needs.build.outputs.dry_run == 'true' && ' (dry run)' || '' }}
+    needs: [build, evidence]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # PyPI's trusted publisher for each project names this workflow (release.yml) and this environment (release).
+    environment: ${{ needs.build.outputs.dry_run != 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+      id-token: write  # PyPI Trusted Publishing + PEP 740 attestations
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build.outputs.tag }}
+          persist-credentials: false
+          sparse-checkout: .github
+      # into the workspace, not runner.temp: the publish action runs in a container that only sees the workspace
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-release
+          path: dist
+      - name: The distributions are the ones the build attested
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          while read -r sum name; do printf '%s  %s\n' "$sum" "$(ls -- */"$name")"; done < SHA256SUMS | sha256sum -c
+      - name: Which files are already on PyPI (they are skipped)
+        run: python3 .github/scripts/pypi-plan.py ${{ needs.build.outputs.dry_run == 'true' && '--dry-run' || '' }} dist/core dist/adapters
+      - name: atlas-pca
+        if: needs.build.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/core/
+          attestations: true
+          skip-existing: true
+          print-hash: true
+      - name: Adapters (after the core they depend on)
+        if: needs.build.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/adapters/
+          attestations: true
+          skip-existing: true
+          print-hash: true
+
+  github-release:
+    name: GitHub Release
+    needs: [build, evidence, publish-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-release
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-evidence
+          path: ${{ runner.temp }}/evidence
+      - name: Release notes (changelog section + how to verify)
+        run: >-
+          node .github/scripts/release-notes.mjs --version "${{ needs.build.outputs.version }}" --repo "$GITHUB_REPOSITORY"
+          --changelog CHANGELOG.md
+          --registry "PyPI: \`atlas-pca\` and the seven \`atlas-pca-*\` adapters at ${{ needs.build.outputs.version }}, with PEP 740 attestations (shown on each file's page on pypi.org)"
+          --sbom sbom-pypi.cdx.json --evidence "security-evidence-${GITHUB_REPOSITORY##*/}-${{ needs.build.outputs.version }}.md"
+          > "$RUNNER_TEMP/notes.md"
+      - name: Create or update the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DRY: ${{ needs.build.outputs.dry_run }}
+          PRE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/assets"
+          cp "$RUNNER_TEMP"/release/*/* "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP"/evidence/security-evidence-* "$RUNNER_TEMP/assets/"
+          cd "$RUNNER_TEMP/assets"
+          cat "$RUNNER_TEMP/evidence/SHA256SUMS.evidence" >> SHA256SUMS
+          sha256sum -c SHA256SUMS --quiet
+          assets=(*)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$DRY" = true ]; then
+              echo "dry run: the Release $TAG already exists; left unchanged" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --draft=false --prerelease="$PRE" --repo "$GITHUB_REPOSITORY"
+            echo "updated the existing Release $TAG" >> "$GITHUB_STEP_SUMMARY"
+          else
+            flags=(--verify-tag --title "atlas-pca $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
+            [ "$DRY" = true ] && flags+=(--draft)
+            [ "$PRE" = true ] && flags+=(--prerelease)
+            gh release create "$TAG" "${assets[@]}" "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+            echo "created the Release $TAG$([ "$DRY" = true ] && echo ' (draft)')" >> "$GITHUB_STEP_SUMMARY"
+          fi

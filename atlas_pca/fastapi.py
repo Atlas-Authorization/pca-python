@@ -8,23 +8,30 @@ FastAPI / Starlette are imported lazily inside the factory so the base ``atlas_p
 zero-dependency install. ``pip install 'atlas-pca[fastapi]'`` pulls FastAPI in.
 """
 from dataclasses import dataclass
-from typing import Callable, Optional
+import inspect
+from typing import Any, Callable, Mapping, Optional, Union
 
+from .authorize import AuthorizedOperation, AuthorizeOptions
 from .pca import Verdict
 from .server import GrantResolver, IntentV2Source, PCAResult, require_pca
 
 
 @dataclass
 class PCAContext:
-    """What a protected route receives: the allowing verdict and the verified PCActn."""
+    """What a protected route receives: the allowing verdict and the verified PCActn (authorize mode: also the
+    operation the decision is bound to)."""
 
     verdict: Verdict
     pcactn: dict
+    operation: Optional[AuthorizedOperation] = None
 
 
 def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
                now: Optional[int] = None, intent_policy: Optional[dict] = None,
-               intent_v2: IntentV2Source = None) -> Callable:
+               intent_v2: IntentV2Source = None,
+               authorize: Union[AuthorizeOptions, Mapping[str, Any], None] = None,
+               operation: Optional[Callable[..., Any]] = None,
+               signature_only: bool = False) -> Callable:
     """Create a FastAPI dependency enforcing a valid PCActn.
 
     Usage::
@@ -32,7 +39,7 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
         from fastapi import Depends, FastAPI, Request
         from atlas_pca.fastapi import RequirePCA
 
-        guard = RequirePCA(audience="rs-orders", resolve_grant=my_resolver)
+        guard = RequirePCA(audience="rs-orders", resolve_grant=my_resolver, authorize=my_options, operation=my_operation)
 
         @app.post("/transfer")
         async def transfer(pca = Depends(guard), request: Request = None):
@@ -41,6 +48,12 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
     ``intent_policy`` (optional) is the Intent Layer M2 policy forwarded to ``verify_pcactn_core``.
     ``intent_v2`` (optional) is the Intent Layer v2 verifier state: a dict, or a callable ``(pcactn) -> dict | None``
     evaluated per request (see ``require_pca``).
+
+    The default (0.5) is the full pipeline (see ``require_pca``): pass ``authorize``, an ``AuthorizeOptions`` (or a
+    dict), and ``operation``, a callable ``(request, body: bytes) -> {"verb", "resource", "params"} | None`` (sync or
+    async) naming what the route will execute. Without ``authorize`` every request is refused (403
+    ``authorize_config``). A denial raises before the route body runs. ``signature_only=True`` is the explicit opt-in
+    to verifying the signature only; it cannot be combined with ``authorize``.
     """
     try:
         from fastapi import HTTPException  # noqa: F401  (imported for a clear error if missing)
@@ -51,7 +64,9 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
         ) from exc
 
     _guard = require_pca(audience=audience, resolve_grant=resolve_grant, now=now, intent_policy=intent_policy,
-                         intent_v2=intent_v2)
+                         intent_v2=intent_v2, signature_only=signature_only,
+                         **({"authorize": authorize} if authorize is not None else {}))
+    _authorize_mode = not signature_only
 
     async def dependency(request: Request) -> PCAContext:
         from fastapi import HTTPException  # local so the symbol is bound at call time
@@ -61,14 +76,26 @@ def RequirePCA(*, audience: str, resolve_grant: GrantResolver,
             body = await request.body()
         except Exception:
             body = None
-        result: PCAResult = _guard(request.headers, body)
+        if _authorize_mode:
+            op = None
+            if operation is not None:
+                try:
+                    op = operation(request, body)
+                    if inspect.isawaitable(op):
+                        op = await op
+                except Exception:  # the mapping failed: no operation, which denies
+                    op = None
+            result: PCAResult = _guard(request.headers, body, operation=op)
+        else:
+            result = _guard(request.headers, body)
         if not result.ok:
             raise HTTPException(
                 status_code=result.status,
                 detail=result.error or "proof-carrying authority required",
                 headers={"WWW-Authenticate": result.www_authenticate} if result.www_authenticate else None,
             )
-        ctx = PCAContext(verdict=result.verdict, pcactn=result.pcactn)
+        ctx = PCAContext(verdict=result.verdict, pcactn=result.pcactn,
+                         operation=result.authorization.operation if result.authorization else None)
         request.state.pca = ctx
         return ctx
 

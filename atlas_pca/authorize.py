@@ -1,0 +1,1067 @@
+"""``authorize()``: the full authorization pipeline for a Python resource server or tool guard (0.5, additive).
+
+``verify_pcactn_core`` answers "is this a validly signed PCActn for this audience". ``authorize`` answers "may THIS
+operation run now", in the same order as the TypeScript ``authorize()`` / ``verifyPCActn``:
+
+  1. configuration: ``audience``, ``resolve_grant``, ``state_store`` (with ``claim``) and ``is_revoked`` are REQUIRED,
+     and the call must name the ``operation`` it will execute (verb, resource, params). A missing one denies with its
+     name; nothing is ever downgraded to "not enforced".
+  2. the core checks (``verify_pcactn_core``: wire, version, audience, validity, chain, grant_ref_bound,
+     plan_inclusion, leaf_signature, counter format, intent), then ``revocation`` (``is_revoked``), then
+     ``zk_compliance`` (a carried proof cannot be verified here: fail closed).
+  3. ``operation``: the signed ``action.verb`` / ``action.resource`` equal the operation's, and the signed
+     ``action.params_digest`` opens to exactly the operation's params. Those params are what the predicates and caveats
+     read, so a $400 operation is judged as $400 even when the agent signed $50 (and then refused for the mismatch).
+  4. ``grant_ref``, ``params_digest``, ``plan_root_authorized`` (``plan="single-step"`` or a ``context`` plan),
+     ``attestation`` (a grant whose ``agent_binding`` pins the agent needs an attestation verifier this SDK does not
+     have: fail closed), ``reversibility`` (when the context names an authoritative class).
+  5. policy: the grant's envelope predicates (default deny), the envelope's caveats and the ROOT caveats outside the
+     envelope (``policy``), and the caveats delegation hops appended (``delegated_caveats``). ``predicates`` and
+     ``tool_schema`` caveats are enforced against the operation; unknown caveat types fail closed.
+  6. replay: only when everything above passes, the counter is consumed through ``state_store.claim(key, counter)``,
+     one atomic compare-and-set per action (key = ``<grant id>:<leaf holder>``). A replayed or older counter fails the
+     ``replay`` check (the name ``counter`` is accepted as an alias in ``require``).
+
+Not ported from the TypeScript policy VM: the risk score, trust budget and threshold step-up (``risk_policy``). A grant
+whose risk policy would make the TypeScript verifier ask for a co-signature is decided here on predicates and caveats
+alone.
+
+Never raises: any internal error is a denial.
+"""
+from __future__ import annotations
+
+import re
+import sqlite3
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Union
+
+from .pca import (REGISTERED_SUITES, StrictJsonError, Verdict, _fin, _plan_leaf, artifact_too_large, conditions_digest,
+                  evaluate_caveats, hash_canonical, merkle_root, params_digest, strict_parse, suite_available,
+                  verify_pcactn_core)
+from .predicates import _js_string, evaluate_predicates, predicate_matches
+from .safe_regex import with_regex_budget
+
+ENVELOPE_CAVEAT = "envelope"
+
+#: The checks that must be ``pass`` (not merely "not failed"): the TypeScript ``DEFAULT_REQUIRED_CHECKS`` plus the
+#: operation binding and the policy. ``require=`` can add names, never remove these.
+DEFAULT_REQUIRED_CHECKS = ("counter_format", "replay", "revocation", "plan_root_authorized", "audience", "validity", "grant_ref_bound",
+                           "operation", "params_digest", "policy")
+
+# A failing one of these is an authentication failure (401), everything else is insufficient authority (403); the same
+# split as the TypeScript requirePCA (the Python core names the chain check `chain`, TypeScript `cap_chain`).
+_AUTHN_CHECKS = ("wire", "version", "audience", "validity", "chain", "grant_ref_bound", "leaf_signature", "malformed",
+                 "grant_ref")
+
+GrantResolver = Callable[[Optional[str]], Optional[dict]]
+RevocationCheck = Callable[[dict, dict], bool]
+
+
+# ---- the replay store ------------------------------------------------------------------------------------------------
+
+class ClaimResult(NamedTuple):
+    """What ``StateStore.claim`` returns. ``ok`` is True only when THIS call consumed the counter."""
+
+    ok: bool
+    last_counter: Optional[int] = None
+
+
+class StateStore:
+    """The replay-store protocol: ``claim(key, counter) -> ClaimResult``.
+
+    ONE atomic operation of your backend: if a counter is stored for ``key`` and ``counter`` is not strictly greater,
+    return ``ClaimResult(False, stored)``; otherwise store ``counter`` and return ``ClaimResult(True)``. A claim that
+    cannot decide must return ``ok=False`` or raise (``authorize`` then denies). Implementations need not subclass this.
+    """
+
+    def claim(self, key: str, counter: int) -> ClaimResult:  # pragma: no cover - protocol
+        raise NotImplementedError
+
+
+class MemoryStateStore(StateStore):
+    """In-process reference store (one lock). Correct for ONE process only; use :class:`SqliteStateStore` or your
+    database for several workers."""
+
+    def __init__(self) -> None:
+        self._last: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def claim(self, key: str, counter: int) -> ClaimResult:
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and not counter > last:
+                return ClaimResult(False, last)
+            self._last[key] = counter
+            return ClaimResult(True)
+
+
+class SqliteStateStore(StateStore):
+    """Durable store on SQLite: one row per counter stream, ``key`` is the PRIMARY KEY (unique constraint).
+
+    The claim is ONE statement, ``INSERT ... ON CONFLICT(key) DO UPDATE ... WHERE excluded.last_counter >
+    last_counter``, which SQLite runs under its write lock, so concurrent threads and processes sharing the file can
+    never both consume the same counter. Needs SQLite 3.24+.
+    """
+
+    TABLE = "pca_replay"
+
+    def __init__(self, path: str, *, timeout: float = 30.0) -> None:
+        self._path = path
+        self._timeout = timeout
+        self._local = threading.local()
+        self._conn().execute(
+            "CREATE TABLE IF NOT EXISTS %s (key TEXT NOT NULL PRIMARY KEY, last_counter INTEGER NOT NULL)" % self.TABLE)
+
+    def _conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self._path, timeout=self._timeout, isolation_level=None)  # autocommit: one statement
+            self._local.conn = c
+        return c
+
+    def claim(self, key: str, counter: int) -> ClaimResult:
+        if not isinstance(key, str) or isinstance(counter, bool) or not isinstance(counter, int):
+            return ClaimResult(False)
+        c = self._conn()
+        cur = c.execute(
+            "INSERT INTO %s (key, last_counter) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET "
+            "last_counter = excluded.last_counter WHERE excluded.last_counter > %s.last_counter" % (self.TABLE, self.TABLE),
+            (key, counter))
+        if cur.rowcount == 1:
+            return ClaimResult(True)
+        row = c.execute("SELECT last_counter FROM %s WHERE key = ?" % self.TABLE, (key,)).fetchone()
+        return ClaimResult(False, row[0] if row else None)
+
+
+def state_key(grant_id: str, leaf_holder: str) -> str:
+    """The store key of a holder's counter stream (the TypeScript ``pcaStateKey`` default scope)."""
+    return "%s:%s" % (grant_id, leaf_holder)
+
+
+# ---- the envelope (TypeScript envelope.ts readEnvelope / risk.ts validateRiskPolicy) ---------------------------------
+
+def _validate_risk_policy(p: Any) -> Optional[str]:
+    if not isinstance(p, dict):
+        return "risk_policy must be an object"
+    w = p.get("weights")
+    if not isinstance(w, dict):
+        return "risk_policy.weights missing"
+    for k in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta"):
+        v = _fin(w.get(k))
+        if v is None or v < 0:
+            return "risk_policy.weights.%s must be finite and >= 0" % k
+    vals = {}
+    for k in ("theta1", "theta2", "kappa", "lambda", "rho", "bMax"):
+        vals[k] = _fin(p.get(k))
+        if vals[k] is None:
+            return "risk_policy.%s must be finite" % k
+    if vals["theta1"] < 0 or vals["theta2"] < vals["theta1"]:
+        return "risk_policy requires 0 <= theta1 <= theta2"
+    if vals["kappa"] <= 0:
+        return "risk_policy.kappa must be > 0"
+    if vals["lambda"] < 0 or vals["rho"] < 0 or vals["bMax"] < 0:
+        return "risk_policy lambda/rho/bMax must be >= 0"
+    return None
+
+
+def read_envelope(grant: Any) -> Optional[dict]:
+    """The grant's policy envelope: its FIRST ``envelope`` caveat without ``type``, or None when absent or malformed."""
+    try:
+        cs = grant.get("caveats") if isinstance(grant, dict) else None
+        if not isinstance(cs, list):
+            return None
+        cv = next((c for c in cs if isinstance(c, dict) and c.get("type") == ENVELOPE_CAVEAT), None)
+        if cv is None:
+            return None
+        e = {k: v for k, v in cv.items() if k != "type"}
+        if not isinstance(e.get("goal_commit"), str):
+            return None
+        if not isinstance(e.get("predicates"), list) or not isinstance(e.get("caveats"), list):
+            return None
+        if not isinstance(e.get("agent_binding"), (dict, list)):
+            return None
+        if _validate_risk_policy(e.get("risk_policy")) is not None:
+            return None
+        return e
+    except Exception:
+        return None
+
+
+def root_caveats(grant: Any) -> Any:
+    """Every root caveat except the first ``envelope`` one (TypeScript ``rootCaveats``); a non-list is returned as is."""
+    cs = grant.get("caveats") if isinstance(grant, dict) else None
+    if not isinstance(cs, list):
+        return cs
+    out = list(cs)
+    for i, c in enumerate(out):
+        if isinstance(c, dict) and c.get("type") == ENVELOPE_CAVEAT:
+            del out[i]
+            break
+    return out
+
+
+def _requires_attestation(binding: Any) -> bool:
+    """TypeScript ``requiresAttestation``: any agent pin in ``agent_binding`` requires a bound attestation."""
+    b = binding if isinstance(binding, dict) else {}
+    ne = lambda x: isinstance(x, list) and len(x) > 0  # noqa: E731
+    mm = b.get("min_measurement", None) if "min_measurement" in b else _ABSENT
+    has_min = mm is not _ABSENT and mm != ""
+    return (ne(b.get("model_allowlist")) or has_min or (isinstance(b.get("operator"), str) and b["operator"] != "")
+            or ne(b.get("weights_allowlist")) or ne(b.get("system_prompt_allowlist"))
+            or ne(b.get("tool_manifest_allowlist")) or b.get("require_hardware") is True
+            or b.get("require_measured_weights") is True)
+
+
+_ABSENT = object()
+
+
+# ---- the semantic firewall: `tool_schema` caveats (TypeScript agent-native.ts) -----------------------------------------
+
+MAX_SCHEMA_DEPTH = 8
+MAX_SCHEMA_NODES = 256
+MAX_OBJECT_PROPS = 64
+MAX_ENUM_VALUES = 256
+DEFAULT_MAX_ARRAY_ITEMS = 256
+ABSOLUTE_MAX_ARRAY_ITEMS = 4096
+DEFAULT_MAX_STRING_LEN = 65_536
+ABSOLUTE_MAX_STRING_LEN = 1_048_576
+MAX_VALUE_NODES = 10_000
+
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
+_SPEC_KEYS = {
+    "string": ("type", "enum", "const", "minLength", "maxLength", "prefix"),
+    "number": ("type", "enum", "const", "min", "max"),
+    "integer": ("type", "enum", "const", "min", "max"),
+    "boolean": ("type", "enum", "const"),
+    "object": ("type", "props", "required"),
+    "array": ("type", "items", "minItems", "maxItems"),
+}
+
+
+def _jslen(s: str) -> int:
+    """JavaScript ``string.length`` (UTF-16 code units)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _is_int(x: Any) -> bool:
+    f = _fin(x)
+    return f is not None and float(f).is_integer()
+
+
+def _non_neg_int(x: Any, mx: int) -> bool:
+    f = _fin(x)
+    return f is not None and float(f).is_integer() and 0 <= f <= mx
+
+
+def _only_keys(o: dict, allowed: Sequence[str]) -> bool:
+    return all(k in allowed for k in o)
+
+
+def _js_eq(a: Any, b: Any) -> bool:
+    """JavaScript ``===`` on the scalars a schema can hold (numbers compare as doubles; a bool is never a number)."""
+    fa, fb = _fin(a), _fin(b)
+    if fa is not None or fb is not None:
+        return fa is not None and fb is not None and fa == fb
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, str) and isinstance(b, str):
+        return a == b
+    return False
+
+
+def validate_arg_schema(schema: Any) -> Optional[str]:
+    """Validate a ``tool_schema`` argument schema (closed; shape, depth, node count, bounds). None when valid."""
+    if not isinstance(schema, dict):
+        return "schema must be an object"
+    if not _only_keys(schema, ("props", "required")):
+        return "unknown schema key"
+    return _object_schema_error(schema.get("props"), schema.get("required", _ABSENT), 1, {"nodes": 0})
+
+
+def _object_schema_error(props: Any, required: Any, depth: int, budget: dict) -> Optional[str]:
+    if depth > MAX_SCHEMA_DEPTH:
+        return "schema too deep"
+    budget["nodes"] += 1
+    if budget["nodes"] > MAX_SCHEMA_NODES:
+        return "schema too large"
+    if not isinstance(props, dict):
+        return "props must be an object"
+    if len(props) > MAX_OBJECT_PROPS:
+        return "too many props"
+    for n, spec in props.items():
+        if not _SAFE_NAME.fullmatch(n):
+            return "invalid property name '%s'" % n[:32]
+        e = _spec_error(spec, depth + 1, budget)
+        if e:
+            return "%s: %s" % (n, e)
+    if required is not _ABSENT:
+        if not isinstance(required, list) or len(required) > MAX_OBJECT_PROPS:
+            return "required must be a short array"
+        for r in required:
+            if not isinstance(r, str) or r not in props:
+                return "required names an undeclared property"
+    return None
+
+
+def _spec_error(spec: Any, depth: int, budget: dict) -> Optional[str]:
+    if depth > MAX_SCHEMA_DEPTH:
+        return "schema too deep"
+    budget["nodes"] += 1
+    if budget["nodes"] > MAX_SCHEMA_NODES:
+        return "schema too large"
+    if not isinstance(spec, dict) or not isinstance(spec.get("type"), str) or spec["type"] not in _SPEC_KEYS:
+        return "unknown type"
+    t = spec["type"]
+    if not _only_keys(spec, _SPEC_KEYS[t]):
+        return "unknown spec key"
+    if t == "object":
+        budget["nodes"] -= 1  # counted once by _object_schema_error
+        return _object_schema_error(spec.get("props"), spec.get("required", _ABSENT), depth, budget)
+    if t == "array":
+        if "minItems" in spec and not _non_neg_int(spec["minItems"], ABSOLUTE_MAX_ARRAY_ITEMS):
+            return "bad minItems"
+        if "maxItems" in spec and not _non_neg_int(spec["maxItems"], ABSOLUTE_MAX_ARRAY_ITEMS):
+            return "bad maxItems"
+        if "minItems" in spec and "maxItems" in spec and spec["minItems"] > spec["maxItems"]:
+            return "minItems > maxItems"
+        return _spec_error(spec.get("items"), depth + 1, budget)
+
+    def ok(v: Any) -> bool:
+        if t == "string":
+            return isinstance(v, str) and _jslen(v) <= 1024
+        if t == "boolean":
+            return isinstance(v, bool)
+        return _fin(v) is not None and (t == "number" or _is_int(v))
+
+    if "const" in spec and not ok(spec["const"]):
+        return "bad const"
+    if "enum" in spec:
+        en = spec["enum"]
+        if not isinstance(en, list) or len(en) == 0 or len(en) > MAX_ENUM_VALUES or not all(ok(x) for x in en):
+            return "bad enum"
+    if t == "string":
+        if "minLength" in spec and not _non_neg_int(spec["minLength"], ABSOLUTE_MAX_STRING_LEN):
+            return "bad minLength"
+        if "maxLength" in spec and not _non_neg_int(spec["maxLength"], ABSOLUTE_MAX_STRING_LEN):
+            return "bad maxLength"
+        if "minLength" in spec and "maxLength" in spec and spec["minLength"] > spec["maxLength"]:
+            return "minLength > maxLength"
+        if "prefix" in spec and (not isinstance(spec["prefix"], str) or _jslen(spec["prefix"]) > 512):
+            return "bad prefix"
+    elif t in ("number", "integer"):
+        if "min" in spec and _fin(spec["min"]) is None:
+            return "bad min"
+        if "max" in spec and _fin(spec["max"]) is None:
+            return "bad max"
+        if "min" in spec and "max" in spec and _fin(spec["min"]) > _fin(spec["max"]):
+            return "min > max"
+    return None
+
+
+def _show(k: str) -> str:
+    import json
+    return json.dumps(k[:48] + "…" if _jslen(k) > 48 else k, ensure_ascii=False)
+
+
+def _check_value(spec: dict, v: Any, path: str, depth: int, budget: dict) -> Optional[str]:
+    if depth > MAX_SCHEMA_DEPTH + 1:
+        return "%s: too deep" % path
+    budget["n"] += 1
+    if budget["n"] > MAX_VALUE_NODES:
+        return "%s: too many values" % path
+    t = spec.get("type")
+    if t == "object":
+        if not isinstance(v, dict):
+            return "%s: expected object" % path
+        return _check_object(spec["props"], spec.get("required"), v, path, depth, budget)
+    if t == "array":
+        if not isinstance(v, list):
+            return "%s: expected array" % path
+        mx = min(spec.get("maxItems", DEFAULT_MAX_ARRAY_ITEMS), ABSOLUTE_MAX_ARRAY_ITEMS)
+        if len(v) > mx:
+            return "%s: exceeds maxItems" % path
+        if "minItems" in spec and len(v) < spec["minItems"]:
+            return "%s: below minItems" % path
+        for i, x in enumerate(v):
+            e = _check_value(spec["items"], x, "%s[%d]" % (path, i), depth + 1, budget)
+            if e:
+                return e
+        return None
+    if t == "string":
+        if not isinstance(v, str):
+            return "%s: wrong type (expected string)" % path
+        n = _jslen(v)
+        if n > min(spec.get("maxLength", DEFAULT_MAX_STRING_LEN), ABSOLUTE_MAX_STRING_LEN):
+            return "%s: exceeds maxLength" % path
+        if "minLength" in spec and n < spec["minLength"]:
+            return "%s: below minLength" % path
+        if "prefix" in spec and not v.startswith(spec["prefix"]):
+            return "%s: violates prefix" % path
+    elif t in ("number", "integer"):
+        f = _fin(v)
+        if f is None or (t == "integer" and not float(f).is_integer()):
+            return "%s: wrong type (expected %s)" % (path, t)
+        if "min" in spec and f < _fin(spec["min"]):
+            return "%s: below min" % path
+        if "max" in spec and f > _fin(spec["max"]):
+            return "%s: above max" % path
+    elif t == "boolean":
+        if not isinstance(v, bool):
+            return "%s: wrong type (expected boolean)" % path
+    else:
+        return "%s: unknown type" % path
+    if "const" in spec and not _js_eq(spec["const"], v):
+        return "%s: violates const" % path
+    if "enum" in spec and not any(_js_eq(e, v) for e in spec["enum"]):
+        return "%s: violates enum" % path
+    return None
+
+
+def _check_object(props: dict, required: Any, obj: dict, path: str, depth: int, budget: dict) -> Optional[str]:
+    for k in obj:
+        if k not in props:
+            return "%s: unexpected argument %s" % (path, _show(k))
+    for r in required or []:
+        if r not in obj:
+            return "%s: missing required argument '%s'" % (path, r)
+    for k in obj:
+        e = _check_value(props[k], obj[k], "%s.%s" % (path, k), depth + 1, budget)
+        if e:
+            return e
+    return None
+
+
+def evaluate_tool_schema(caveat: Any, call: Any) -> "tuple[bool, Optional[str]]":
+    """Evaluate a tool call ``{"tool", "args", "tool_signature_digest"?}`` against a ``tool_schema`` caveat.
+    Returns ``(ok, reason)``. Same rules as the TypeScript ``evaluateToolSchema``. Never raises."""
+    try:
+        if not isinstance(caveat, dict) or caveat.get("type") != "tool_schema" \
+                or not isinstance(caveat.get("tool"), str) or caveat["tool"] == "":
+            return False, "malformed tool_schema caveat"
+        verr = validate_arg_schema(caveat.get("schema"))
+        if verr:
+            return False, "malformed tool_schema caveat: %s" % verr
+        if hash_canonical(caveat["schema"]) != caveat.get("schema_digest"):
+            return False, "schema digest mismatch"
+        sig = _js_string(caveat["signature_digest"]) if "signature_digest" in caveat else "undefined"
+        if hash_canonical({"tool": caveat["tool"], "signature_digest": sig, "schema": caveat["schema"]}) \
+                != caveat.get("binding_digest"):
+            return False, "binding digest mismatch"
+        if not isinstance(call, dict) or not isinstance(call.get("tool"), str) or not isinstance(call.get("args"), dict):
+            return False, "malformed call"
+        if call["tool"] != caveat["tool"]:
+            return False, "tool %s not authorized" % _show(call["tool"])
+        if "tool_signature_digest" in call and call["tool_signature_digest"] != caveat.get("signature_digest"):
+            return False, "signed tool_binding differs from the authorized tool signature"
+        e = _check_object(caveat["schema"]["props"], caveat["schema"].get("required"), call["args"], "args", 1, {"n": 0})
+        return (False, e) if e else (True, None)
+    except Exception:
+        return False, "evaluation error (fail closed)"
+
+
+# ---- the agent-native caveat evaluator (TypeScript evaluateAgentCaveats) ----------------------------------------------
+
+def _agent_caveat_satisfied(cv: Any, ctx: dict, action_ctx: dict, tool_call: dict) -> bool:
+    try:
+        if not isinstance(cv, dict) or not isinstance(ctx, dict):
+            return False
+        t = cv.get("type")
+        if t == "tool_schema":
+            return evaluate_tool_schema(cv, tool_call)[0]
+        if t == "predicates":
+            allow = cv.get("allow")
+            if not isinstance(action_ctx, dict) or not isinstance(allow, list):
+                return False
+            return any(predicate_matches(p, action_ctx) for p in allow)
+        # max_spend and the stock types: the 0.4.1 evaluator (unknown types fail closed there)
+        ok, _ = evaluate_caveats([cv], ctx)
+        return ok
+    except Exception:
+        return False
+
+
+def evaluate_agent_caveats(caveats: Any, ctx: Mapping[str, Any], action_ctx: Optional[dict] = None,
+                           tool_call: Optional[dict] = None) -> "tuple[bool, list]":
+    """Evaluate caveats with the agent-native evaluator: the stock types of :func:`atlas_pca.evaluate_caveats`, plus
+    ``predicates`` (``allow``: the action must match one predicate; needs ``action_ctx`` = ``{"action": {...},
+    "subject"?, "env"?}``) and ``tool_schema`` (needs ``tool_call`` = ``{"tool", "args", "tool_signature_digest"?}``).
+    ``ctx`` is the stock context (``now``, ``action``, ``blast_radius``, ...). Unknown types fail closed. Returns
+    ``(ok, failed_types)``. Never raises."""
+    def run() -> "tuple[bool, list]":
+        if not isinstance(caveats, list):
+            return False, ["<malformed caveats>"]
+        failed = []
+        for cv in caveats:
+            if not _agent_caveat_satisfied(cv, dict(ctx), action_ctx or {}, tool_call or {}):
+                t = cv.get("type") if isinstance(cv, dict) else None
+                failed.append(t if isinstance(t, str) else "<malformed>")
+        return not failed, failed
+    try:
+        return with_regex_budget(run)
+    except Exception:
+        return False, ["<evaluation error>"]
+
+
+# ---- authorize ----------------------------------------------------------------------------------------------------------
+
+_CLASS_RANK = {"reversible": 0, "rate_limited": 1, "costly": 1, "irreversible": 2}
+
+
+def _class_rank(c: Any) -> int:
+    return _CLASS_RANK.get(c, 2) if isinstance(c, str) else 2
+
+
+@dataclass
+class AuthorizedOperation:
+    """The operation an allowing decision is bound to. ``id`` is the digest of the presented PCActn."""
+
+    verb: str
+    resource: str
+    params_digest: str
+    id: str
+
+
+@dataclass
+class AuthorizeResult:
+    """Outcome of :func:`authorize`. ``allow`` is the one thing a caller must branch on.
+
+    ``status`` is 200, 401 (no / undecodable / unauthenticated proof) or 403. ``checks`` maps each check to ``pass``,
+    ``fail`` or ``not-enforced``; ``reason`` is the decisive one (an ``operation`` failure first). ``missing`` names
+    configuration components that were absent (the call was refused before any verification)."""
+
+    allow: bool
+    status: int
+    checks: Dict[str, str] = field(default_factory=dict)
+    reasons: List[str] = field(default_factory=list)
+    reason: Optional[str] = None
+    operation: Optional[AuthorizedOperation] = None
+    pcactn: Optional[dict] = None
+    verdict: Optional[Verdict] = None
+    missing: Optional[List[str]] = None
+    #: Per check: ``{"outcome": pass | fail | not-enforced | unsupported, "level"?, "suites"?, "reason"?}`` (see
+    #: :func:`assurance_report`). ``unsupported`` names a feature this SDK does not implement; it is never a pass.
+    assurance: Dict[str, dict] = field(default_factory=dict)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+def _refuse(status: int, check: str, reason: str, *, missing: Optional[List[str]] = None,
+            pcactn: Optional[dict] = None) -> AuthorizeResult:
+    return AuthorizeResult(allow=False, status=status, checks={check: "fail"}, reasons=[reason], reason=reason,
+                           missing=missing, pcactn=pcactn, assurance={check: {"outcome": "fail"}})
+
+
+# ---- assurance labels (0.5, additive) -------------------------------------------------------------------------------
+
+def _sig_level(alg: Any) -> str:
+    """``ed25519``, ``hybrid`` (Ed25519 + a PQ suite), ``pq`` (PQ only), or ``unknown`` for an unregistered suite."""
+    a = "ed25519" if alg is None else alg
+    if a == "ed25519":
+        return "ed25519"
+    if not isinstance(a, str) or a not in REGISTERED_SUITES:
+        return "unknown"
+    return "hybrid" if a.startswith("hybrid-") else "pq"
+
+
+def _weakest(levels: List[str]) -> str:
+    for lv in ("unknown", "ed25519", "hybrid"):
+        if lv in levels:
+            return lv
+    return "pq" if levels else "unknown"
+
+
+def _unavailable(alg: Any) -> bool:
+    a = "ed25519" if alg is None else alg
+    return isinstance(a, str) and a in REGISTERED_SUITES and not suite_available(a)
+
+
+def assurance_report(p: Optional[dict], checks: Mapping[str, str]) -> Dict[str, dict]:
+    """What each check rests on (the TypeScript ``assuranceReport``). Signature checks carry their suites and level;
+    features this SDK does not implement are ``unsupported``: a carried ``zk_compliance`` proof, attestation (no
+    attestation verifier), threshold co-signatures, a bond, and a registered suite whose backend is missing here."""
+    out: Dict[str, dict] = {}
+    pp = p if isinstance(p, dict) else {}
+    chain = pp.get("cap_chain") if isinstance(pp.get("cap_chain"), list) else []
+    hop_algs = [(c.get("alg") if isinstance(c, dict) else None) for c in chain]
+    for name, st in checks.items():
+        e: dict = {"outcome": st}
+        if st == "pass" and name == "leaf_signature":
+            alg = pp.get("alg", "ed25519")
+            e.update(level=_sig_level(alg), suites=[str(alg)])
+        elif st == "pass" and name == "chain":
+            algs = ["ed25519" if a is None else a for a in hop_algs]
+            e.update(level=_weakest([_sig_level(a) for a in algs]), suites=[str(a) for a in algs])
+        out[name] = e
+
+    def unsupported(name: str, why: str) -> None:
+        out[name] = {"outcome": "unsupported", "reason": why}
+
+    if out.get("leaf_signature", {}).get("outcome") == "fail" and _unavailable(pp.get("alg")):
+        unsupported("leaf_signature", "signature suite '%s' has no backend in this runtime" % pp.get("alg"))
+    if out.get("chain", {}).get("outcome") == "fail" and any(_unavailable(a) for a in hop_algs):
+        unsupported("chain", "a capability suite has no backend in this runtime")
+    if "zk_compliance" in pp:
+        unsupported("zk_compliance", "zk compliance verification is not implemented by this SDK")
+    if out.get("attestation", {}).get("outcome") == "fail":
+        unsupported("attestation", "attestation verification is not implemented by this SDK")
+    if "threshold" in pp:
+        unsupported("threshold", "threshold co-signatures are not verified by this SDK")
+    if "bond_ref" in pp:
+        unsupported("bond", "bond verification is not implemented by this SDK")
+    return out
+
+
+_ASSURANCE_KEYS = ("attestation", "zk", "signature", "threshold", "allow_preview")
+
+
+def unmet_assurance(report: Mapping[str, dict], require: Mapping[str, Any]) -> Optional[str]:
+    """The TypeScript ``unmetAssurance``: the first unmet dimension of ``require`` (``attestation``, ``zk``,
+    ``signature='pq'``, ``threshold=[schemes]``, ``allow_preview``), or None. This SDK verifies no attestation, zk proof
+    or threshold, so requiring one always denies; any ``unsupported`` outcome denies."""
+    for name, e in report.items():
+        if e.get("outcome") == "unsupported":
+            return "unsupported: %s (%s); a high-assurance policy never accepts it" % (name, e.get("reason"))
+    unknown = [k for k in require if k not in _ASSURANCE_KEYS]
+    if unknown:
+        return "unknown assurance requirement(s): %s (fail closed)" % ", ".join(sorted(unknown))
+    for key, check in (("attestation", "attestation"), ("zk", "zk_compliance"), ("threshold", "threshold")):
+        if require.get(key) is not None:
+            e = report.get(check)
+            return "%s required but %s" % (key, "there is no %s evidence" % check if e is None else
+                                          "the %s check is %s" % (check, e.get("outcome")))
+    if require.get("signature") is not None:
+        if require["signature"] != "pq":
+            return "unknown signature requirement %r (fail closed)" % (require["signature"],)
+        for name in ("leaf_signature", "chain"):
+            e = report.get(name)
+            if e is None or e.get("outcome") != "pass":
+                return "post-quantum signatures required but the %s check is %s" % (
+                    name, "absent" if e is None else e.get("outcome"))
+            if e.get("level") not in ("pq", "hybrid"):
+                return "post-quantum signatures required but %s is %s" % (name, e.get("level"))
+    return None
+
+
+def missing_authorize_components(*, audience: Any, resolve_grant: Any, state_store: Any, is_revoked: Any) -> List[str]:
+    """Names of the required components that are absent (empty = complete)."""
+    missing = []
+    if not isinstance(audience, str) or audience == "":
+        missing.append("audience")
+    if not callable(resolve_grant):
+        missing.append("resolve_grant")
+    if state_store is None or not callable(getattr(state_store, "claim", None)):
+        missing.append("state_store")
+    if not callable(is_revoked):
+        missing.append("is_revoked")
+    return missing
+
+
+def _valid_operation(op: Any) -> bool:
+    if not isinstance(op, Mapping):
+        return False
+    return (isinstance(op.get("verb"), str) and op["verb"] != "" and isinstance(op.get("resource"), str)
+            and op["resource"] != "" and isinstance(op.get("params"), dict))
+
+
+def _decisive(checks: Dict[str, str], reasons: List[str]) -> str:
+    names = sorted(checks, key=lambda n: 0 if n == "operation" else 1)  # stable: a binding failure first
+    for n in names:
+        if checks[n] != "fail":
+            continue
+        hit = next((r for r in reasons if r.startswith(n + ":")), None)
+        if hit:
+            return hit
+    return reasons[0] if reasons else "denied"
+
+
+def _coerce(pcactn: Any) -> "tuple[Optional[dict], Optional[str]]":
+    if isinstance(pcactn, dict):
+        return pcactn, None
+    if isinstance(pcactn, (str, bytes, bytearray)):
+        if artifact_too_large(pcactn):
+            return None, "undecodable"
+        try:
+            text = bytes(pcactn).decode("utf-8") if isinstance(pcactn, (bytes, bytearray)) else pcactn
+            obj = strict_parse(text)
+        except (StrictJsonError, UnicodeDecodeError):
+            return None, "undecodable"
+        return (obj, None) if isinstance(obj, dict) else (None, "undecodable")
+    return None, "absent" if pcactn is None else "undecodable"
+
+
+def authorize(pcactn: Union[dict, str, bytes, None], *, operation: Mapping[str, Any], audience: str,
+              resolve_grant: GrantResolver, state_store: Any, is_revoked: RevocationCheck,
+              now: Optional[int] = None, plan: Optional[str] = None,
+              context: Optional[Callable[[dict], Optional[dict]]] = None, intent_policy: Optional[dict] = None,
+              intent_v2: Any = None, allowed_suites: Any = None, require: Sequence[str] = (),
+              require_assurance: Optional[Mapping[str, Any]] = None) -> AuthorizeResult:
+    """Authorize ONE operation (see the module doc for the pipeline).
+
+    ``pcactn``        the presented PCActn: a parsed object, or its JSON text (strict profile).
+    ``operation``     ``{"verb", "resource", "params"}``: what the handler / tool WILL execute, from the server's own
+                      routing and parsed input, never from the PCActn. ``params`` must be a dict.
+    ``audience``      this resource server's id (the PCActn's signed ``aud`` must equal it).
+    ``resolve_grant`` ``(grant_ref) -> grant | None`` from your own store.
+    ``state_store``   replay store with an atomic ``claim(key, counter)`` (:class:`MemoryStateStore`,
+                      :class:`SqliteStateStore`, or your database).
+    ``is_revoked``    ``(pcactn, grant) -> bool``; only ``False`` passes (anything else, or an exception, denies).
+    ``now``           epoch milliseconds (default: wall clock).
+    ``plan``          ``"single-step"``: accept a one-node plan whose node is exactly this operation. Otherwise
+                      ``context`` must return the principal-authorized ``plan`` with ``plan_authorized: True``.
+    ``context``       ``(pcactn) -> dict | None`` with optional ``plan``, ``plan_authorized``, ``subject``, ``env``,
+                      ``blast_radius``, ``recent_action_times``, ``reversibility_class`` (the server's
+                      authoritative class; the agent may only declare a stricter one).
+    ``intent_policy`` / ``intent_v2`` / ``allowed_suites``: forwarded to ``verify_pcactn_core`` (``intent_v2`` may be
+                      a callable ``(pcactn) -> dict``; its ``params`` default to the operation's).
+    ``require``       extra check names that must pass (the defaults always apply).
+    ``require_assurance`` high-assurance policy, e.g. ``{"signature": "pq"}``: weaker, missing, failed or unsupported
+                      evidence fails the ``assurance`` check before any replay state is written. Every result carries
+                      ``assurance`` (see :func:`assurance_report`).
+    """
+    try:
+        r = _authorize(pcactn, operation, audience, resolve_grant, state_store, is_revoked, now, plan, context,
+                       intent_policy, intent_v2, allowed_suites, require, require_assurance)
+        if not r.assurance:
+            r.assurance = assurance_report(r.pcactn, r.checks)
+        return r
+    except Exception as e:  # noqa: BLE001 - never raise: an internal error denies
+        return _refuse(403, "authorize", "authorize: error (fail closed): %s" % type(e).__name__)
+
+
+def _authorize(pcactn, operation, audience, resolve_grant, state_store, is_revoked, now, plan, context, intent_policy,
+               intent_v2, allowed_suites, require, require_assurance=None) -> AuthorizeResult:
+    missing = missing_authorize_components(audience=audience, resolve_grant=resolve_grant, state_store=state_store,
+                                           is_revoked=is_revoked)
+    if plan is not None and plan != "single-step":
+        missing.append("plan (only 'single-step' or None)")
+    if missing:
+        return _refuse(403, "authorize_config", "authorize_config: missing required component(s): %s (fail closed)"
+                       % ", ".join(missing), missing=missing)
+    if not _valid_operation(operation):
+        return _refuse(403, "operation", "operation: authorize needs the operation to execute (verb, resource, params) "
+                                         "(fail closed)")
+    # a private copy: the params that are verified cannot change under the verifier
+    op = {"verb": operation["verb"], "resource": operation["resource"],
+          "params": strict_parse(_canon_json(operation["params"]))}
+
+    p, err = _coerce(pcactn)
+    if p is None:
+        return _refuse(401, "wire", "wire: no PCActn presented" if err == "absent" else "wire: PCActn could not be decoded")
+    grant_ref = p.get("grant_ref")
+    if not isinstance(grant_ref, str):
+        return _refuse(401, "malformed", "malformed: grant_ref is not a string", pcactn=p)
+    try:
+        grant = resolve_grant(grant_ref)
+    except Exception:  # noqa: BLE001
+        return _refuse(403, "resolve_grant", "resolve_grant: grant resolution failed (fail closed)", pcactn=p)
+    if not isinstance(grant, dict):
+        return _refuse(401, "grant_ref", "grant_ref: does not resolve to a known grant", pcactn=p)
+
+    if now is None:
+        now = int(time.time() * 1000)
+    ctx: dict = {}
+    if context is not None:
+        try:
+            ctx = context(p) or {}
+        except Exception:  # noqa: BLE001
+            return _refuse(403, "context", "context: the context callback failed (fail closed)", pcactn=p)
+        if not isinstance(ctx, dict):
+            return _refuse(403, "context", "context: the context callback must return a dict (fail closed)", pcactn=p)
+
+    v2 = intent_v2
+    if callable(intent_v2):
+        try:
+            v2 = intent_v2(p)
+        except Exception:  # noqa: BLE001
+            return _refuse(403, "intent_v2", "intent_v2: verifier state unavailable (fail closed)", pcactn=p)
+    if isinstance(v2, dict) and v2.get("params") is None:
+        v2 = dict(v2, params=op["params"])
+
+    # ---- 1. the core checks
+    core = verify_pcactn_core(p, grant, now=now, audience=audience, allowed_suites=allowed_suites,
+                              intent_policy=intent_policy, intent_v2=v2)
+    if core.checks.get("wire") is False:
+        r = core.reason or "wire: malformed PCActn"
+        return AuthorizeResult(allow=False, status=401, checks={"wire": "fail", "malformed": "fail"}, reasons=[r],
+                               reason=r, pcactn=p, verdict=core)
+    checks: Dict[str, str] = {k: ("pass" if ok else "fail") for k, ok in core.checks.items()}
+    reasons: List[str] = [] if core.allow or not core.reason else [core.reason]
+
+    def mark(name: str, status: str) -> None:
+        checks[name] = status
+
+    def fail(name: str, why: str) -> None:
+        checks[name] = "fail"
+        reasons.append("%s: %s" % (name, why))
+
+    # ---- 2. revocation (required) and a carried zk proof (no verifier here: fail closed)
+    try:
+        revoked = is_revoked(p, grant)
+    except Exception:  # noqa: BLE001
+        revoked = None
+    if revoked is False:
+        mark("revocation", "pass")
+    else:
+        fail("revocation", "the grant is revoked" if revoked is True else "the revocation check failed (fail closed)")
+    if "zk_compliance" in p:
+        fail("zk_compliance", "PCActn carries a zk_compliance proof but no zk verifier enforced it (fail closed)")
+
+    action = p.get("action") if isinstance(p.get("action"), dict) else {}
+    signed_digest = action.get("params_digest")
+    op_digest = params_digest(op["params"])
+
+    # ---- 3. the operation binding
+    if action.get("verb") != op["verb"] or action.get("resource") != op["resource"]:
+        fail("operation", "the proof is for %s on %s, but this operation is %s on %s"
+             % (_js_string(action.get("verb")), _js_string(action.get("resource")), op["verb"], op["resource"]))
+    elif op_digest != signed_digest:
+        fail("operation", "the proof's params_digest does not match the params of this %s operation" % op["verb"])
+    else:
+        mark("operation", "pass")
+
+    # ---- 4. grant_ref, params, plan, attestation, reversibility
+    if grant_ref == grant.get("id"):
+        mark("grant_ref", "pass")
+    else:
+        fail("grant_ref", "does not reference the supplied grant")
+    if op_digest == signed_digest:
+        mark("params_digest", "pass")
+    else:
+        fail("params_digest", "supplied params do not hash to action.params_digest")
+
+    pl = p.get("plan") if isinstance(p.get("plan"), dict) else {}
+    node_id = pl.get("node_id")
+    plan_nodes = ctx.get("plan")
+    plan_authorized = ctx.get("plan_authorized")
+    if plan == "single-step" and plan_nodes is None:
+        plan_nodes = [{"id": _js_string(node_id), "verb": op["verb"], "resource": op["resource"],
+                       "params_digest": op_digest, "reversibility_class": action.get("reversibility_class")}]
+        plan_authorized = True
+    if plan_nodes is not None:
+        try:
+            known = merkle_root([_plan_leaf(n.get("id"), n, conditions_digest(n.get("pre"), n.get("post")))
+                                 for n in plan_nodes])
+        except Exception:  # noqa: BLE001
+            known = None
+        if known is None or known != pl.get("root"):
+            fail("plan_root_authorized", "known plan does not match plan.root")
+        elif plan_authorized is not True:
+            fail("plan_root_authorized", "the plan root has not been authorized by the principal")
+        else:
+            mark("plan_root_authorized", "pass")
+    else:
+        mark("plan_root_authorized", "not-enforced")
+
+    env = read_envelope(grant)
+    if _requires_attestation(env.get("agent_binding") if env else None):
+        fail("attestation", "the grant binds the agent (agent_binding) so a valid, bound attestation is REQUIRED "
+                            "(no attestation verifier in this SDK: fail closed)")
+
+    declared = action.get("reversibility_class")
+    effective = declared
+    server_class = ctx.get("reversibility_class")
+    if server_class is not None:
+        dr, sr = _class_rank(declared), _class_rank(server_class)
+        if dr < sr:
+            fail("reversibility", "declared class '%s' is less restrictive than the authoritative '%s'"
+                 % (_js_string(declared), server_class))
+        else:
+            mark("reversibility", "pass")
+        effective = declared if dr > sr else server_class
+
+    # ---- 5. policy: envelope predicates + envelope caveats + root caveats; then the delegated caveats
+    chain = p.get("cap_chain") if isinstance(p.get("cap_chain"), list) else []
+    depth = max(0, len(chain) - 1)
+    inner = {"verb": action.get("verb"), "resource": action.get("resource"), "params": op["params"]}
+    if effective is not None:
+        inner["reversibility_class"] = effective
+    action_ctx: dict = {"action": inner}
+    if ctx.get("subject") is not None:
+        action_ctx["subject"] = ctx["subject"]
+    pred_env = _v2_env(p, grant, v2, now, ctx.get("env"))
+    if pred_env is not None:
+        action_ctx["env"] = pred_env
+    tool_call: dict = {"tool": inner["verb"] if isinstance(inner["verb"], str) else "", "args": op["params"]}
+    if isinstance(p.get("tool_binding"), str):
+        tool_call["tool_signature_digest"] = p["tool_binding"]
+    rev_class = effective
+    if rev_class is None and isinstance(node_id, str) and isinstance(plan_nodes, list):
+        rev_class = next((n.get("reversibility_class") for n in plan_nodes
+                          if isinstance(n, dict) and n.get("id") == node_id), None)
+    cctx = {"now": now, "action": inner, "delegation_depth": depth}
+    if ctx.get("blast_radius") is not None:
+        cctx["blast_radius"] = ctx["blast_radius"]
+    if rev_class is not None:
+        cctx["reversibility_class"] = rev_class
+    if ctx.get("recent_action_times") is not None:
+        cctx["recent_action_times"] = ctx["recent_action_times"]
+
+    def policy_step() -> List[str]:
+        why: List[str] = []
+        if env is None:
+            return ["grant carries no valid envelope"]
+        pr = evaluate_predicates(env["predicates"], action_ctx)
+        if not pr.get("allowed"):
+            why.append(pr.get("reason") or "action not permitted by envelope predicates")
+        ok, failed = evaluate_agent_caveats(env["caveats"], cctx, action_ctx, tool_call)
+        if not ok:
+            why.append("caveat(s) not satisfied: %s" % ", ".join(failed))
+        ok, failed = evaluate_agent_caveats(root_caveats(grant), cctx, action_ctx, tool_call)
+        if not ok:
+            why.append("root caveat(s) not satisfied: %s" % ", ".join(failed))
+        return why
+
+    if chain:
+        leaf = chain[-1] if isinstance(chain[-1], dict) else {}
+        gcs = grant.get("caveats") if isinstance(grant.get("caveats"), list) else []
+        extra = leaf.get("caveats")[len(gcs):] if isinstance(leaf.get("caveats"), list) else None
+        ok, failed = evaluate_agent_caveats(extra, cctx, action_ctx, tool_call)
+        if ok:
+            mark("delegated_caveats", "pass")
+        else:
+            fail("delegated_caveats", "delegation caveat(s) not satisfied: %s" % ", ".join(failed))
+
+    try:
+        policy_why = with_regex_budget(policy_step)
+    except Exception:  # noqa: BLE001
+        policy_why = ["policy evaluation error (fail closed)"]
+    if policy_why:
+        checks["policy"] = "fail"
+        reasons.extend("policy: %s" % w for w in policy_why)
+    else:
+        mark("policy", "pass")
+
+    # ---- required checks (default-deny), then the replay counter
+    # ``replay`` is tentative until the atomic claim below (a refused claim flips it to fail); the store is present here.
+    mark("replay", "pass")
+    # the old name ``counter`` is an alias of ``replay`` in a ``require`` list
+    for name in list(DEFAULT_REQUIRED_CHECKS) + ["replay" if n == "counter" else n for n in require if isinstance(n, str)]:
+        st = checks.get(name)
+        if st != "pass" and st != "fail":
+            checks[name] = "fail"
+            reasons.append("%s: required check is %s (default-deny: not enforced by this resource server)"
+                           % (name, st or "absent"))
+
+    # ---- high-assurance policy (before any replay state is written)
+    if require_assurance is not None:
+        unmet = unmet_assurance(assurance_report(p, checks), require_assurance if isinstance(require_assurance, Mapping)
+                                else {"invalid": True})
+        if unmet is None:
+            mark("assurance", "pass")
+        else:
+            fail("assurance", unmet)
+
+    def deny() -> AuthorizeResult:
+        status = 401 if any(checks.get(c) == "fail" for c in _AUTHN_CHECKS) else 403
+        return AuthorizeResult(allow=False, status=status, checks=checks, reasons=reasons,
+                               reason=_decisive(checks, reasons), pcactn=p, verdict=core)
+
+    if any(s == "fail" for s in checks.values()):
+        return deny()
+
+    holder = chain[-1].get("holder") if chain and isinstance(chain[-1], dict) else None
+    counter = p.get("counter")
+    if not isinstance(holder, str) or not isinstance(grant.get("id"), str):
+        fail("replay", "no counter stream for this proof (fail closed)")
+        return deny()
+    try:
+        claimed = state_store.claim(state_key(grant["id"], holder), counter)
+    except Exception:  # noqa: BLE001
+        claimed = None
+    if isinstance(claimed, bool):
+        claimed = ClaimResult(claimed)
+    if not (isinstance(claimed, tuple) and len(claimed) >= 1 and claimed[0] is True):
+        last = claimed[1] if isinstance(claimed, tuple) and len(claimed) > 1 else None
+        if claimed is None:
+            fail("replay", "the replay store failed (fail closed)")
+        elif last is not None:
+            fail("replay", "%s is not greater than last seen %s (replay)" % (counter, last))
+        else:
+            fail("replay", "%s was already claimed (replay)" % (counter,))
+        return deny()
+    return AuthorizeResult(allow=True, status=200, checks=checks, reasons=reasons, pcactn=p, verdict=core,
+                           operation=AuthorizedOperation(verb=op["verb"], resource=op["resource"],
+                                                         params_digest=signed_digest, id=hash_canonical(p)))
+
+
+def _canon_json(v: Any) -> str:
+    from .pca import canonicalize
+    return canonicalize(v)
+
+
+def _v2_env(p: dict, grant: dict, v2: Any, now: int, env: Any) -> Any:
+    """The predicate ``env``: the host's, with the verifier-computed Intent Layer v2 members (TypeScript ``v2Env``)."""
+    if "intent_session" not in p:
+        return env
+    rest = dict(env) if isinstance(env, dict) else {}
+    for k in ("acc", "mon", "canon", "world", "prov", "class"):
+        rest.pop(k, None)
+    from .intent_v2 import decide_intent_v2  # deferred: intent_v2 imports pca
+    d = decide_intent_v2(p, grant, v2, now).get("env") or {}
+    for k, v in d.items():
+        if v is not None:
+            rest[k] = v
+    return rest
+
+
+def is_authorized_for(result: AuthorizeResult, operation: Mapping[str, Any]) -> bool:
+    """True only if ``result`` allowed exactly this operation (verb, resource, params digest). Call it where the side
+    effect runs, with the values it is about to use."""
+    try:
+        b = result.operation if isinstance(result, AuthorizeResult) and result.allow else None
+        if b is None or not _valid_operation(operation):
+            return False
+        return (b.verb == operation["verb"] and b.resource == operation["resource"]
+                and b.params_digest == params_digest(operation["params"]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@dataclass
+class AuthorizeOptions:
+    """The ``authorize`` components a guard adds on top of its ``audience`` / ``resolve_grant`` (the opt-in for
+    ``require_pca(authorize=...)``, the FastAPI / Django helpers and the framework adapters)."""
+
+    state_store: Any = None
+    is_revoked: Optional[RevocationCheck] = None
+    plan: Optional[str] = "single-step"
+    context: Optional[Callable[[dict], Optional[dict]]] = None
+    require: Sequence[str] = ()
+    require_assurance: Optional[Mapping[str, Any]] = None
+
+    def run(self, pcactn: Any, *, operation: Any, audience: str, resolve_grant: GrantResolver,
+            now: Optional[int] = None, intent_policy: Optional[dict] = None, intent_v2: Any = None) -> AuthorizeResult:
+        return authorize(pcactn, operation=operation, audience=audience, resolve_grant=resolve_grant,
+                         state_store=self.state_store, is_revoked=self.is_revoked, now=now, plan=self.plan,
+                         context=self.context, intent_policy=intent_policy, intent_v2=intent_v2, require=self.require,
+                         require_assurance=self.require_assurance)
+
+
+def authorize_tool_call(options: AuthorizeOptions, pcactn: Any, *, verb: Optional[str], resource: Optional[str],
+                        params: Optional[Mapping[str, Any]], audience: str, resolve_grant: GrantResolver,
+                        now: Optional[int] = None) -> AuthorizeResult:
+    """``authorize`` for an agent tool guard: the operation is the capability the tool requires (``verb``,
+    ``resource``) with the tool-call arguments as ``params``. A tool that declares no capability, or a call whose
+    arguments could not be bound (``params`` None, e.g. positional arguments), is refused (fail closed)."""
+    if not isinstance(options, AuthorizeOptions):
+        return _refuse(403, "authorize_config", "authorize_config: authorize options are not an AuthorizeOptions "
+                                                "(fail closed)", missing=["authorize"])
+    missing = missing_authorize_components(audience=audience, resolve_grant=resolve_grant,
+                                           state_store=options.state_store, is_revoked=options.is_revoked)
+    if missing:  # configuration first: a guard built without its store / revocation check names what is missing
+        return _refuse(403, "authorize_config", "authorize_config: missing required component(s): %s (fail closed)"
+                       % ", ".join(missing), missing=missing)
+    if not isinstance(verb, str) or not isinstance(resource, str):
+        return _refuse(403, "operation", "operation: the tool declares no capability (verb:resource) to bind the "
+                                         "proof to (fail closed)")
+    if params is None:
+        return _refuse(403, "operation", "operation: the tool-call arguments could not be bound (pass them as "
+                                         "keyword arguments) (fail closed)")
+    return options.run(pcactn, operation={"verb": verb, "resource": resource, "params": dict(params)},
+                       audience=audience, resolve_grant=resolve_grant, now=now)

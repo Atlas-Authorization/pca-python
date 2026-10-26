@@ -46,7 +46,7 @@ def _raw_tool() -> Tool:
 def _guarded(**kw: Any) -> Tool:
     opts = {"audience": AUD, "resolve_grant": resolver, "now": NOW}
     opts.update(kw)
-    return pca_tool(REQUIRE, **opts)(_raw_tool())
+    return pca_tool(REQUIRE, **opts, signature_only=True)(_raw_tool())
 
 
 def _messages() -> List[ChatMessage]:
@@ -109,7 +109,7 @@ def test_wrong_audience_denied() -> None:
 @needs_invoker
 def test_guard_tool_invoker_gates_existing_invoker_in_pipeline() -> None:
     inv = ToolInvoker(tools=[_raw_tool()], raise_on_failure=False)
-    guard_tool_invoker(inv, audience=AUD, require={"place_order": REQUIRE}, resolve_grant=resolver, now=NOW)
+    guard_tool_invoker(inv, audience=AUD, require={"place_order": REQUIRE}, resolve_grant=resolver, now=NOW, signature_only=True)
     pipe = Pipeline()
     pipe.add_component("invoker", inv)
     with pca_context(PCACTN):
@@ -173,7 +173,7 @@ def test_agent_denies_without_running(ctx: Any) -> None:
 def test_guarded_tool_keeps_all_original_tool_fields() -> None:
     raw = _raw_tool()
     raw.outputs_to_string = {"source": "x"}  # a field a naive rebuild would silently drop
-    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=resolver, now=NOW)(raw)
+    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=resolver, now=NOW, signature_only=True)(raw)
     assert guarded.outputs_to_string == {"source": "x"}
 
 
@@ -188,7 +188,7 @@ def test_async_function_is_guarded_too() -> None:
     if not hasattr(raw, "async_function"):
         pytest.skip("this haystack-ai has no async_function")
     raw.async_function = place_async
-    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=resolver, now=NOW)(raw)
+    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=resolver, now=NOW, signature_only=True)(raw)
     with pytest.raises(Exception) as ei:
         asyncio.run(guarded.invoke_async(sku="A1"))
     assert "no proof-carrying action presented" in str(ei.value)
@@ -196,3 +196,49 @@ def test_async_function_is_guarded_too() -> None:
     with pca_context(PCACTN):
         assert asyncio.run(guarded.invoke_async(sku="A1")) == "ordered"
     assert RAN == ["async-A1"]
+
+
+# ---- opt-in authorize (atlas-pca 0.5) against the real framework -------------------------------------------------------
+
+def _az_fixtures() -> Any:
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "python-pca", "testdata",
+                         "authorize-fixtures.json")
+    with open(path, encoding="utf-8") as fh:
+        fx = _json.load(fh)
+    proofs = {c["name"]: c["steps"][0]["pcactn"] for c in fx["cases"]}
+    grants = {c["grant"]["id"]: c["grant"] for c in fx["cases"]}
+    return fx["now"], fx["audience"], grants, proofs["envelope-max-spend-within"], proofs["envelope-max-spend-400-refused"]
+
+
+AZ_NOW, AZ_AUD, AZ_GRANTS, AZ_P50, AZ_P400 = _az_fixtures()
+AZ_SEND = "payments.send:payments/acme"
+
+
+def _az_opts() -> Any:
+    from atlas_pca import AuthorizeOptions, MemoryStateStore
+
+    return AuthorizeOptions(state_store=MemoryStateStore(), is_revoked=lambda p, g: False)
+
+
+def test_real_authorize_refuses_400_and_replay() -> None:
+    def send_payment(amount: int, currency: str) -> str:
+        RAN.append("%d %s" % (amount, currency))
+        return "sent %d" % amount
+
+    raw = Tool(name="send_payment", description="Send a payment",
+               parameters={"type": "object", "properties": {"amount": {"type": "integer"},
+                                                            "currency": {"type": "string"}},
+                           "required": ["amount", "currency"]},
+               function=send_payment)
+    t = pca_tool(AZ_SEND, audience=AZ_AUD, resolve_grant=AZ_GRANTS.get, now=AZ_NOW, authorize=_az_opts())(raw)
+    from haystack.tools.errors import ToolInvocationError  # the real Tool wraps the denial
+
+    with pytest.raises(ToolInvocationError, match="policy: caveat\\(s\\) not satisfied: max_spend"):
+        t.invoke(amount=400, currency="usd", pca_action=AZ_P400)
+    assert t.invoke(amount=50, currency="usd", pca_action=AZ_P50) == "sent 50"
+    with pytest.raises(ToolInvocationError, match="replay"):
+        t.invoke(amount=50, currency="usd", pca_action=AZ_P50)
+    assert RAN == ["50 usd"]

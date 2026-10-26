@@ -9,10 +9,11 @@ pytest.importorskip("django")
 
 def _settings():
     s = X._django()
-    for name in ("PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW", "PCA_INTENT_V2", "PCA_INTENT_POLICY"):
+    for name in ("PCA_SIGNATURE_ONLY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW", "PCA_INTENT_V2", "PCA_INTENT_POLICY"):
         if hasattr(s, name):
             delattr(s, name)
     s.PCA_AUDIENCE = X.AUD
+    s.PCA_SIGNATURE_ONLY = True
     s.PCA_RESOLVE_GRANT = X.resolve_for_dotted
     return s
 
@@ -22,7 +23,7 @@ def _clean_settings():
     yield
     from django.conf import settings
 
-    for name in ("PCA_INTENT_V2", "PCA_INTENT_POLICY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
+    for name in ("PCA_INTENT_V2", "PCA_INTENT_POLICY", "PCA_SIGNATURE_ONLY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
         if settings.configured and hasattr(settings, name):
             delattr(settings, name)
 

@@ -38,7 +38,7 @@ def _raw_tool() -> Any:
 def _guard(raw: Any, **kw: Any) -> Any:
     opts = {"audience": AUD, "resolve_grant": resolver, "now": NOW}
     opts.update(kw)
-    return pca_tool(REQUIRE, **opts)(raw)
+    return pca_tool(REQUIRE, **opts, signature_only=True)(raw)
 
 
 def test_guarded_tool_is_a_real_basetool() -> None:
@@ -121,7 +121,7 @@ def _kickoff(crew: Crew) -> str:
 
 def test_guard_crew_runs_tool_in_real_kickoff_with_proof() -> None:
     crew = guard_crew(_crew([_raw_tool()]), audience=AUD, require={"place_order": REQUIRE},
-                      resolve_grant=resolver, now=NOW)
+                      resolve_grant=resolver, now=NOW, signature_only=True)
     with pca_context(PCACTN):
         assert _kickoff(crew) == "done"
     assert RAN == ["Z9"]
@@ -129,13 +129,58 @@ def test_guard_crew_runs_tool_in_real_kickoff_with_proof() -> None:
 
 def test_guard_crew_blocks_tool_in_real_kickoff_without_proof() -> None:
     crew = guard_crew(_crew([_raw_tool()]), audience=AUD, require={"place_order": REQUIRE},
-                      resolve_grant=resolver, now=NOW)
+                      resolve_grant=resolver, now=NOW, signature_only=True)
     _kickoff(crew)
     assert RAN == []
 
 
 def test_guard_tools_list() -> None:
-    (g,) = guard_tools([_raw_tool()], audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW)
+    (g,) = guard_tools([_raw_tool()], audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW, signature_only=True)
     assert isinstance(g, BaseTool)
     with pytest.raises(PcaToolDenied):
         g.run(sku="x")
+
+
+# ---- opt-in authorize (atlas-pca 0.5) against the real framework -------------------------------------------------------
+
+def _az_fixtures() -> Any:
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "python-pca", "testdata",
+                         "authorize-fixtures.json")
+    with open(path, encoding="utf-8") as fh:
+        fx = _json.load(fh)
+    proofs = {c["name"]: c["steps"][0]["pcactn"] for c in fx["cases"]}
+    grants = {c["grant"]["id"]: c["grant"] for c in fx["cases"]}
+    return fx["now"], fx["audience"], grants, proofs["envelope-max-spend-within"], proofs["envelope-max-spend-400-refused"]
+
+
+AZ_NOW, AZ_AUD, AZ_GRANTS, AZ_P50, AZ_P400 = _az_fixtures()
+AZ_SEND = "payments.send:payments/acme"
+
+
+def _az_opts() -> Any:
+    from atlas_pca import AuthorizeOptions, MemoryStateStore
+
+    return AuthorizeOptions(state_store=MemoryStateStore(), is_revoked=lambda p, g: False)
+
+
+def test_real_authorize_refuses_400_and_replay() -> None:
+    @tool("send_payment")
+    def send_payment(amount: int, currency: str) -> str:
+        """Send a payment."""
+        RAN.append("%d %s" % (amount, currency))
+        return "sent %d" % amount
+
+    t = pca_tool(AZ_SEND, audience=AZ_AUD, resolve_grant=AZ_GRANTS.get, now=AZ_NOW, authorize=_az_opts())(send_payment)
+    assert isinstance(t, BaseTool)
+    with pytest.raises(PcaToolDenied) as ei:
+        t.run(amount=400, currency="usd", pca_action=AZ_P400)
+    assert ei.value.decision.reason == "policy: caveat(s) not satisfied: max_spend"
+    with pytest.raises(PcaToolDenied):
+        t.run(amount=400, currency="usd", pca_action=AZ_P50)  # a $50 proof for a $400 call
+    assert t.run(amount=50, currency="usd", pca_action=AZ_P50) == "sent 50"
+    with pytest.raises(PcaToolDenied):
+        t.run(amount=50, currency="usd", pca_action=AZ_P50)  # replay
+    assert RAN == ["50 usd"]

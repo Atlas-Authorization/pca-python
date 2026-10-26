@@ -60,7 +60,7 @@ def _state(tool_calls, **extra):
 
 
 def _node(tools, *, require=REQUIRE, audience=AUD):
-    return PcaToolNode(tools, audience=audience, require=require, resolve_grant=resolver, now=NOW)
+    return PcaToolNode(tools, audience=audience, require=require, resolve_grant=resolver, now=NOW, signature_only=True)
 
 
 # ---- the happy path ------------------------------------------------------------------
@@ -108,7 +108,7 @@ def test_invoke_entrypoint():
 def test_gates_every_pending_call_in_one_super_step():
     place = _Tool("place_order")
     read = _Tool("read_order")
-    node = PcaToolNode([place, read], audience=AUD, require=None, resolve_grant=resolver, now=NOW)
+    node = PcaToolNode([place, read], audience=AUD, require=None, resolve_grant=resolver, now=NOW, signature_only=True)
     with pca_context(PCACTN):
         out = node(_state([_tc("place_order", {"sku": "a"}, id="c1"),
                            _tc("read_order", {"id": "b"}, id="c2")]))
@@ -191,7 +191,7 @@ def test_no_pending_calls_returns_empty():
 def test_guard_tool_node_wraps_a_tool_node():
     place = _Tool("place_order")
     base = _ToolNodeLike([place])
-    guarded = guard_tool_node(base, audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW)
+    guarded = guard_tool_node(base, audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW, signature_only=True)
     assert isinstance(guarded, PcaToolNode)
     # fails closed without a proof...
     out = guarded(_state([_tc("place_order", {"sku": "a"})]))
@@ -204,7 +204,7 @@ def test_guard_tool_node_wraps_a_tool_node():
 
 def test_guard_tool_node_accepts_a_plain_tool_list():
     tool = _Tool("place_order")
-    guarded = guard_tool_node([tool], audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW)
+    guarded = guard_tool_node([tool], audience=AUD, require=REQUIRE, resolve_grant=resolver, now=NOW, signature_only=True)
     with pca_context(PCACTN):
         out = guarded(_state([_tc("place_order", {"sku": "a"})]))
     assert out["messages"][0].status == "success"
@@ -214,12 +214,12 @@ def test_guard_tool_node_accepts_a_plain_tool_list():
 
 def test_requires_audience():
     with pytest.raises(ValueError):
-        PcaToolNode([_Tool("t")], audience="", require=REQUIRE, resolve_grant=resolver)
+        PcaToolNode([_Tool("t")], audience="", require=REQUIRE, resolve_grant=resolver, signature_only=True)
 
 
 def test_requires_verifier_or_resolver():
     with pytest.raises(ValueError):
-        PcaToolNode([_Tool("t")], audience=AUD, require=REQUIRE)
+        PcaToolNode([_Tool("t")], audience=AUD, require=REQUIRE, signature_only=True)
 
 
 def test_rejects_both_verifier_and_resolver():
@@ -228,9 +228,9 @@ def test_rejects_both_verifier_and_resolver():
             raise AssertionError("not called")
 
     with pytest.raises(ValueError):
-        PcaToolNode([_Tool("t")], audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver)
+        PcaToolNode([_Tool("t")], audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver, signature_only=True)
 
 
 def test_malformed_require_entry_raises_at_construction():
     with pytest.raises(ValueError):
-        PcaToolNode([_Tool("place_order")], audience=AUD, require="not-a-pair", resolve_grant=resolver)
+        PcaToolNode([_Tool("place_order")], audience=AUD, require="not-a-pair", resolve_grant=resolver, signature_only=True)

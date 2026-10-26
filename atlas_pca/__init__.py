@@ -102,3 +102,45 @@ from .server import (  # noqa: F401  (framework-agnostic guard; imports only fro
     extract_pcactn,
     require_pca,
 )
+from .authorize import (  # noqa: F401  (0.5: the full authorization pipeline, opt-in)
+    AuthorizedOperation,
+    AuthorizeOptions,
+    AuthorizeResult,
+    ClaimResult,
+    MemoryStateStore,
+    SqliteStateStore,
+    StateStore,
+    assurance_report,
+    authorize,
+    authorize_tool_call,
+    evaluate_agent_caveats,
+    evaluate_tool_schema,
+    is_authorized_for,
+    missing_authorize_components,
+    read_envelope,
+    root_caveats,
+    unmet_assurance,
+)
+
+from .passport import verify_passport  # noqa: F401,E402  (signed agent passport, wire level)
+from .ledger import (  # noqa: F401  (transparency ledger: proofs, tree heads, witnesses)
+    EMPTY_TREE_ROOT,
+    detect_equivocation,
+    verify_checkpoint_chain,
+    verify_head_consistency,
+    verify_ledger_consistency,
+    verify_ledger_inclusion,
+    verify_tree_head,
+    verify_witness_cosignature,
+    verify_witness_cosignatures,
+    verify_witnessed_head,
+)
+from .optimistic import (  # noqa: F401  (optimistic path: claims, challenge window, fraud proofs, settlement records)
+    challenge_window_end,
+    claim_check,
+    claim_status,
+    fraud_proof_wire_check,
+    settlement_wire_check,
+    within_challenge_window,
+)
+from .attest import verifier_from_config  # noqa: F401,E402  (vendor hardware-attestation verifiers; needs the `attest` extra at call time)

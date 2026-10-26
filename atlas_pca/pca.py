@@ -1126,7 +1126,7 @@ def validate_wire_v2(p: Any) -> Optional[str]:
 #
 # Normative rules: packages/pca/src/intent-binding.ts and conformance/README.md "Intent binding". The optional top-level
 # `intent` slot is SIGNED (part of the canonical body). When present it is an object with EXACTLY the members below
-# (else `wire` fails). The `intent` check runs after `counter` and is reported iff the PCActn carries `intent` OR the
+# (else `wire` fails). The `intent` check runs after `counter_format` and is reported iff the PCActn carries `intent` OR the
 # verifier's intent policy is ACTIVE; otherwise the verdict is the pre-M2 one.
 
 INTENT_GOAL_PREFIX = "pca-intent:v1:"
@@ -1556,7 +1556,7 @@ def verify_artifact_suite(artifact: dict) -> bool:
     return verify_leaf_suite(artifact, artifact.get("ed_pub"), msg)
 
 
-CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter")
+CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter_format")
 
 
 @dataclass
@@ -1682,9 +1682,9 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
 
         c = p["counter"]
         if _is_safe_int(c) and c >= 0:
-            checks["counter"] = True
+            checks["counter_format"] = True
         else:
-            fail("counter", "not a non-negative safe integer")
+            fail("counter_format", "missing or not a non-negative safe integer")
 
         # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
         # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
