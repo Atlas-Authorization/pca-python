@@ -25,6 +25,7 @@ from .pca import (
     grant_session_caveat, hash_canonical, intent_session_caveat_error, params_digest, sha256, suite_available,
     verify_leaf_suite, REGISTERED_SUITES,
 )
+from .decision import decide_tighten, decide_units, model_paths_read
 from .intent_layers import decide_layer_ceilings
 from .intent_map import MAP_FORM_COMMIT, decide_map_disclosure
 from .intent_wb import decide_intent_wb, validate_wb_context
@@ -1698,8 +1699,10 @@ def intent_v2_context_error(ctx: Any) -> Optional[str]:
         # closed member sets; every flag a JSON boolean, every number a safe integer when present (absent = default)
         pol = ctx["policy"]
         for k in _js_keys(pol):
-            if k not in ("session", "schema", "acc", "map"):
+            if k not in ("session", "schema", "acc", "map", "model_polarity"):
                 return "policy: unknown member '%s'" % k
+        if "model_polarity" in pol and pol["model_polarity"] not in ("strict", "legacy"):
+            return "policy.model_polarity must be 'strict' or 'legacy'"
         if not _opt_obj(pol, "session"):
             return "policy.session must be an object"
         if "session" in pol:
@@ -1743,6 +1746,8 @@ def intent_v2_context_error(ctx: Any) -> Optional[str]:
                 return "policy.map.max_residual_risk_ppm must be a non-negative safe integer"
     if not _opt_obj(ctx, "params"):
         return "params must be an object"
+    if not _opt_obj(ctx, "env"):
+        return "env must be an object"
     for k in ("schema", "session", "acc"):
         if not _opt_obj(ctx, k):
             return "%s must be an object" % k
@@ -2169,6 +2174,7 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
     if not present:
         if map_active:
             run("map", lambda: _map_step(p, ctx))
+        _model_rules(out, p, grant, ctx, run, action)
         return
 
     def acc():
@@ -2193,6 +2199,8 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
     except Exception as e:  # noqa: BLE001
         out["checks"].append({"name": "facts", "ok": False, "reason": "W-B error (fail closed): %s" % e})
     if wb is not None:
+        if wb.get("single_source"):
+            out["single_source"] = list(wb["single_source"])
         checks = wb.get("checks") or {}
         reason = wb.get("reason")
         for name in ("facts", "provenance", "classes"):
@@ -2213,6 +2221,71 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
                 if wenv.get(k) is not None:
                     merged[k] = wenv[k]
             out["env"] = merged
+    _model_rules(out, p, grant, ctx, run, action)
+
+
+def _allow_side_predicates(env: Any, ctx: Any) -> list:
+    """The predicate lists a model-derived path could widen: the grant's allow-list and the ceilings (V5 layers)."""
+    lists: list = [None if env is None else env.get("predicates")]
+    layers = _prop(ctx, "layers")
+    if isinstance(layers, dict):
+        for k in ("org", "site", "std"):
+            e = layers.get(k)
+            lists.append(e.get("predicates") if isinstance(e, dict) else None)
+    return lists
+
+
+def _model_rules(out: dict, p: Any, grant: Any, ctx: Any, run: Any, action: dict) -> None:
+    """Rules 20 and 21 (intent-v2.ts `modelRules`), evaluated last so the verifier-computed `env` is complete. Both read the
+    signed ENVELOPE of the stored grant:
+      `units` (20): reported iff `envelope.units` is present.
+      `tighten` (21): reported iff `envelope.tighten` or a `model_polarity` (envelope or policy) is present, or a grant-side
+      `where` reads a model-derived env path (so that case is refused, never silently skipped). A PCActn with none of these
+      verifies byte-identically to a verifier without the two rules."""
+    from .authorize import read_envelope  # deferred: authorize imports this package's core
+    env = read_envelope(grant)
+    preds = _allow_side_predicates(env, ctx)
+    if env is not None and "units" in env:
+        def units():
+            if "schema" in out:
+                doc = out["schema"]
+            else:
+                s = _schema_step(p, ctx)
+                if not s["ok"]:
+                    return s
+                doc = s["doc"]
+            v = schema_verb(doc, action["verb"])
+            inp = {"units": env["units"], "verb": action["verb"], "predicates": preds}
+            su = _prop(doc, "units")
+            if su is not _UNDEF:  # an explicit null is NOT absent (rule 20 refuses it)
+                inp["schema_units"] = su
+            if v is not None and "params" in v:
+                inp["verb_params"] = v["params"]
+            d = decide_units(inp)
+            return {"ok": True} if d["ok"] else _bad(d["reason"])
+        run("units", units)
+    single = out.get("single_source") or []
+    pol = _prop(_prop(ctx, "policy"), "model_polarity")
+    if pol == "strict":
+        polarity = _UNDEF
+    elif pol is not _UNDEF:
+        polarity = pol
+    else:
+        polarity = _UNDEF if env is None else env.get("model_polarity", _UNDEF)
+    if (env is not None and "tighten" in env) or polarity is not _UNDEF or pol is not _UNDEF or model_paths_read(preds, single):
+        def tighten_rule():
+            host_env = _prop(ctx, "env")
+            inp = {"predicates": preds, "single_source": single,
+                   "context": {"action": action, "env": dict(host_env if isinstance(host_env, dict) else {}, **(out.get("env") or {}))}}
+            if env is not None and "tighten" in env:
+                inp["tighten"] = env["tighten"]
+            if polarity is not _UNDEF:
+                inp["polarity"] = polarity
+            r = decide_tighten(inp)
+            if r["legacy"]:
+                out["legacy_model_polarity"] = True
+            return {"ok": True} if r["outcome"] == "ok" else _bad(r.get("reason") or "refused")
+        run("tighten", tighten_rule)
 
 
 def _map_step(p: dict, ctx: Any) -> dict:

@@ -161,7 +161,7 @@ def test_fastapi_exact():
     seen = {}
 
     @app.post("/p")
-    async def p(request: Request, pca=Depends(RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW))):
+    async def p(request: Request, pca=Depends(RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW, signature_only=True))):
         seen["ctx"] = (pca, request.state.pca)
         return {"t": type(pca).__name__}
 
@@ -180,7 +180,7 @@ def test_fastapi_exact():
     app2 = FastAPI()
 
     @app2.post("/q")
-    async def q(pca=Depends(RequirePCA(audience="zz", resolve_grant=_resolver, now=NOW))):
+    async def q(pca=Depends(RequirePCA(audience="zz", resolve_grant=_resolver, now=NOW, signature_only=True))):
         return {}
 
     r = tc.TestClient(app2).post("/q", headers={"PCA-Action": hv})
@@ -189,7 +189,7 @@ def test_fastapi_exact():
     # body-read failure is treated as "no body"
     import asyncio
 
-    dep = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW)
+    dep = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW, signature_only=True)
 
     class Req:
         headers = {"PCA-Action": hv}
@@ -240,7 +240,7 @@ def test_django_exact():
 
     hv = _header_value(PCACTN)
     rf = RequestFactory()
-    for name in ("PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
+    for name in ("PCA_SIGNATURE_ONLY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
         if hasattr(settings, name):
             delattr(settings, name)
     with pytest.raises(ImproperlyConfigured, match="^PCAMiddleware requires settings.PCA_AUDIENCE$"):
@@ -249,6 +249,7 @@ def test_django_exact():
     with pytest.raises(ImproperlyConfigured, match="PCA_AUDIENCE"):
         PCAMiddleware(lambda r: None)
     settings.PCA_AUDIENCE = AUD
+    settings.PCA_SIGNATURE_ONLY = True
     with pytest.raises(ImproperlyConfigured, match="^PCAMiddleware requires settings.PCA_RESOLVE_GRANT$"):
         PCAMiddleware(lambda r: None)
     settings.PCA_RESOLVE_GRANT = 5
@@ -270,16 +271,18 @@ def test_django_exact():
     called.clear()
     r = mw(rf.generic("POST", "/x"))
     assert called == [] and r.status_code == 401
-    assert json.loads(r.content) == {"error": "absent", "status": 401}
+    assert json.loads(r.content) == {"error": "absent", "status": 401, "decision": "deny"}
     assert r["WWW-Authenticate"] == f'PCA realm="pca", audience="{AUD}", error="invalid_request", error_description="no PCActn presented"'
     r = mw(rf.post("/x", data=json.dumps({"pcactn": PCACTN}), content_type="application/json"))
     assert r.status_code == 200
     # _deny edge cases: no error text -> "forbidden"; no challenge -> no header
     from atlas_pca.server import PCAResult
     r = mw._deny(PCAResult(ok=False, status=403))
-    assert json.loads(r.content) == {"error": "forbidden", "status": 403} and r.status_code == 403 and not r.has_header("WWW-Authenticate")
+    assert json.loads(r.content) == {"error": "forbidden", "status": 403, "decision": "deny"} and r.status_code == 403 and not r.has_header("WWW-Authenticate")
     r = mw._deny(PCAResult(ok=False, status=401, error="e", www_authenticate="w"))
-    assert json.loads(r.content) == {"error": "e", "status": 401} and r["WWW-Authenticate"] == "w"
+    assert json.loads(r.content) == {"error": "e", "status": 401, "decision": "deny"} and r["WWW-Authenticate"] == "w"
+    r = mw._deny(PCAResult(ok=False, status=403, error="q", decision="escalate", escalation={"kind": "pca-escalation-request"}))
+    assert json.loads(r.content) == {"error": "q", "status": 403, "decision": "escalate", "escalation": {"kind": "pca-escalation-request"}}
 
     # unreadable body is treated as absent
     class BadBody:

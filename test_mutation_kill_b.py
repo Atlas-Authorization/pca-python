@@ -93,7 +93,7 @@ def _pcactn(chain, leaf_k, iat=NOW - 1000, exp=NOW + 600_000, **extra):
 ROOT = _cap(PRINCIPAL, _pub(AGENT), CAVEATS)
 P0 = _pcactn([ROOT], AGENT)
 ALL_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-          "plan_inclusion": True, "leaf_signature": True, "counter": True}
+          "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 
 
 class Hostile(Exception):
@@ -141,7 +141,7 @@ def test_inner_malformed_reason_and_checks_exact():
     v = _verify(P0, grant={"x": float("nan")})
     assert v.allow is False
     assert v.checks == {"wire": True, "version": True, "audience": True, "validity": True, "chain": False,
-                        "plan_inclusion": False, "leaf_signature": False, "counter": False}
+                        "plan_inclusion": False, "leaf_signature": False, "counter_format": False}
     assert v.reason == "malformed PCActn: canonicalize: non-finite number"
     # an earlier failure keeps its reason (first failure wins)
     v = _verify(P0, grant={"x": float("nan")}, audience="someone-else")

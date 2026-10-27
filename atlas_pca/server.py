@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Optional, Union
 
 from .pca import (StrictJsonError, PcaHeaderError, Verdict, artifact_too_large, decode_pca_header, strict_parse,
                   verify_pcactn_core)
+from .authorize import AuthorizeOptions, AuthorizeResult
 
 PCA_HEADER = "PCA-Action"
 REALM = "pca"
@@ -26,6 +27,8 @@ REALM = "pca"
 GrantResolver = Callable[[Optional[str]], Optional[dict]]
 # Intent Layer v2 verifier state: a dict (TS IntentV2Context), or a callable (pcactn) -> dict | None evaluated per request.
 IntentV2Source = Union[dict, Callable[[dict], Optional[dict]], None]
+# authorize mode: ``(headers, body) -> {"verb", "resource", "params"} | None``, the operation this request will execute.
+OperationMapper = Callable[[Mapping[str, str], Union[bytes, bytearray, str, None]], Optional[Mapping[str, Any]]]
 
 
 @dataclass
@@ -38,6 +41,12 @@ class PCAResult:
     pcactn: Optional[dict] = None
     error: Optional[str] = None
     www_authenticate: Optional[str] = None
+    #: authorize mode only: the full :class:`atlas_pca.authorize.AuthorizeResult` (checks, reasons, bound operation).
+    authorization: Optional[AuthorizeResult] = None
+    #: ``allow`` (ok), ``escalate`` (refused: ask the principal; ``escalation`` is the request) or ``deny``. ``ok`` is
+    #: exactly ``decision == "allow"``; an escalate is never ok.
+    decision: str = "deny"
+    escalation: Optional[dict] = None
 
     # Dict-style access so callers can treat it as {ok, status, verdict, pcactn, ...}.
     def __getitem__(self, key: str) -> Any:
@@ -139,9 +148,38 @@ def extract_pcactn(headers: Mapping[str, str],
     return inner, None
 
 
+def as_authorize_options(authorize: Union[AuthorizeOptions, Mapping[str, Any], None]) -> Optional[AuthorizeOptions]:
+    """Normalize the ``authorize=`` option: an :class:`AuthorizeOptions`, a dict of its fields, or None."""
+    if authorize is None or isinstance(authorize, AuthorizeOptions):
+        return authorize
+    if isinstance(authorize, Mapping):
+        return AuthorizeOptions(**dict(authorize))
+    raise TypeError("authorize must be an AuthorizeOptions, a dict of its fields, or None")
+
+
+ESCALATION_HEADER = "PCA-Escalation-Answer"
+
+
+def extract_escalation_answer(headers: Mapping[str, str], body: Union[bytes, bytearray, str, None]) -> Any:
+    """The principal's EscalationAnswer: header ``PCA-Escalation-Answer`` (strict base64url JSON), else the body member
+    ``escalation_answer``; None when absent or unreadable (an unreadable answer is no answer)."""
+    try:
+        raw = _get_header(headers, ESCALATION_HEADER)
+        if raw is not None:
+            return strict_parse(decode_pca_header(raw))
+        text = _to_text(body)
+        env = strict_parse(text) if text is not None else None
+        return env.get("escalation_answer") if isinstance(env, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def require_pca(*, audience: str, resolve_grant: GrantResolver,
                 now: Optional[int] = None, intent_policy: Optional[dict] = None,
-                intent_v2: IntentV2Source = None) -> Callable[..., PCAResult]:
+                intent_v2: IntentV2Source = None,
+                authorize: Union[AuthorizeOptions, Mapping[str, Any], None] = None,
+                operation: Optional[OperationMapper] = None,
+                signature_only: bool = False) -> Callable[..., PCAResult]:
     """Build a framework-agnostic guard.
 
     ``audience``      — this resource server's own id; the PCActn's signed ``aud`` must equal it.
@@ -155,16 +193,36 @@ def require_pca(*, audience: str, resolve_grant: GrantResolver,
                         grants, accumulator pre-state under its row lock, receipts, plaintext params). A callable that
                         raises fails closed (403 ``intent_v2_context_error``).
 
-    The returned callable takes ``(headers, body)`` and returns a :class:`PCAResult`.
+    ``authorize``     — the full pipeline (the default since 0.5): an :class:`atlas_pca.authorize.AuthorizeOptions` (or a
+                        dict of its fields: ``state_store``, ``is_revoked``, ``plan``, ``context``, ``require``). Each
+                        request goes through :func:`atlas_pca.authorize.authorize`: binding to the executed operation,
+                        envelope predicates, root and delegated caveats, revocation and the replay counter, all
+                        required. A missing component denies (403 ``authorize_config`` naming it); omitting ``authorize``
+                        gives an empty option set, so every request is refused until you supply the store and the
+                        revocation check. Nothing is ever downgraded to signature-only.
+    ``signature_only`` — explicit opt-in to the core verifier alone (signature, chain, audience, validity, counter format):
+                        no policy, replay or revocation check. Passing it together with ``authorize`` raises ``ValueError``.
+    ``operation``     — authorize mode: ``(headers, body) -> {"verb", "resource", "params"} | None``, the operation the
+                        handler will execute (from your routing and parsed body, never from the PCActn). The guard
+                        call also accepts ``operation=`` directly. No operation denies (403).
+
+    The returned callable takes ``(headers, body)`` (authorize mode: also ``operation=``) and returns a
+    :class:`PCAResult`.
     """
+    if signature_only and authorize is not None:
+        raise ValueError("require_pca: signature_only and authorize are mutually exclusive")
+    az = None if signature_only else (as_authorize_options(authorize) or AuthorizeOptions())
 
     def guard(headers: Mapping[str, str],
-              body: Union[bytes, bytearray, str, None] = None) -> PCAResult:
+              body: Union[bytes, bytearray, str, None] = None, *,
+              operation: Optional[Mapping[str, Any]] = None) -> PCAResult:
         pcactn, err = extract_pcactn(headers, body)
         if pcactn is None:
             desc = "no PCActn presented" if err == "absent" else "PCActn could not be decoded"
             return PCAResult(ok=False, status=401, error=err,
                              www_authenticate=challenge(audience, "invalid_request", desc))
+        if az is not None:
+            return _authorized(pcactn, headers, body, operation)
 
         grant_ref = pcactn.get("grant_ref") if isinstance(pcactn, dict) else None
         # Mirrors TS requirePCA: a grant_ref that is not a string (absent, null, list, dict, number) is a malformed
@@ -194,7 +252,7 @@ def require_pca(*, audience: str, resolve_grant: GrantResolver,
         verdict = verify_pcactn_core(pcactn, grant, now=now, audience=audience, intent_policy=intent_policy,
                                      intent_v2=v2)
         if verdict.allow:
-            return PCAResult(ok=True, status=200, verdict=verdict, pcactn=pcactn)
+            return PCAResult(ok=True, status=200, verdict=verdict, pcactn=pcactn, decision="allow")
         return PCAResult(ok=False, status=403, verdict=verdict, pcactn=pcactn,
                          error=verdict.reason or "insufficient_authority",
                          # Never echo verdict.reason into the header: it can carry attacker-controlled text (CR/LF ->
@@ -202,4 +260,24 @@ def require_pca(*, audience: str, resolve_grant: GrantResolver,
                          # on ``verdict`` / ``error`` for the host's (JSON-encoded) body.
                          www_authenticate=challenge(audience, "insufficient_authority"))
 
+    def _authorized(pcactn: dict, headers: Mapping[str, str], body: Union[bytes, bytearray, str, None],
+                    op: Optional[Mapping[str, Any]]) -> PCAResult:
+        if op is None and mapper is not None:
+            try:
+                op = mapper(headers, body)
+            except Exception:  # noqa: BLE001 - the host's mapping failed: no operation, which denies below
+                op = None
+        r = az.run(pcactn, operation=op, audience=audience, resolve_grant=resolve_grant, now=now,
+                   intent_policy=intent_policy, intent_v2=intent_v2,
+                   escalation_answer=extract_escalation_answer(headers, body))
+        if r.allow:
+            return PCAResult(ok=True, status=200, verdict=r.verdict, pcactn=pcactn, authorization=r, decision="allow",
+                             escalation=r.escalation)
+        code = "invalid_pcactn" if r.status == 401 else "insufficient_authority"
+        # the reason stays on ``error`` / ``authorization`` (never in the header, see above)
+        return PCAResult(ok=False, status=r.status, verdict=r.verdict, pcactn=pcactn, error=r.reason,
+                         www_authenticate=challenge(audience, code), authorization=r, decision=r.decision,
+                         escalation=r.escalation)
+
+    mapper = operation
     return guard

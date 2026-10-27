@@ -5,7 +5,7 @@ function to verify a proof-carrying action *before* the tool runs and fail close
 
 * no proof, or an undecodable one                      -> reject (the tool never runs)
 * a proof that does not verify under the core verifier -> reject (bad signature / chain / validity /
-  wrong audience / unknown grant / replay counter)
+  wrong audience / unknown grant / malformed counter; the counter is format-checked, not replay-checked)
 * a valid proof whose authorized action does not satisfy the tool's required capability -> reject
 * otherwise                                            -> run the real tool
 
@@ -65,6 +65,8 @@ class PCADecision:
     verdict: Optional[Verdict] = None
     pcactn: Optional[PCActn] = None
     tool: Optional[str] = None
+    #: authorize mode: the full ``atlas_pca.AuthorizeResult`` (checks, reasons, bound operation)
+    authorization: Any = None
 
 
 # PCARejected subclasses pydantic_ai's ModelRetry when it is installed, so a rejection surfaces to the
@@ -103,6 +105,14 @@ def _resolve_verifier(verifier: Optional[Verifier], resolve_grant: Optional[Gran
     return verifier
 
 
+def _authorize_options(authorize: Any) -> Any:
+    from atlas_pca.authorize import AuthorizeOptions  # atlas-pca 0.5+
+
+    if authorize is None:
+        return AuthorizeOptions()  # empty: every call is refused (authorize_config) until a store etc. is supplied
+    return AuthorizeOptions(**dict(authorize)) if isinstance(authorize, Mapping) else authorize
+
+
 def _takes_ctx(func: Callable[..., object]) -> bool:
     """True when ``func``'s first parameter is a Pydantic AI ``RunContext`` (an ``@agent.tool``).
 
@@ -138,6 +148,11 @@ class PCAGuard:
     across an agent's tools without repeating the audience/verifier each time::
 
         guard = PCAGuard(audience="agent://orders", resolve_grant=my_resolver)
+        # the default (0.5): bind the call arguments, enforce caveats / revocation / replay
+        guard = PCAGuard(audience="agent://orders", resolve_grant=my_resolver,
+                         authorize=AuthorizeOptions(state_store=store, is_revoked=is_revoked))
+        # explicit opt-in to verifying the signature only
+        guard = PCAGuard(audience="agent://orders", resolve_grant=my_resolver, signature_only=True)
 
         @agent.tool
         @guard.tool("write:db/orders")
@@ -156,19 +171,37 @@ class PCAGuard:
         verifier: Optional[Verifier] = None,
         resolve_grant: Optional[GrantResolver] = None,
         key: str = PCA_KEY,
+        authorize: Any = None,
+        now: Optional[int] = None,
+        signature_only: bool = False,
     ) -> None:
         if not audience:
             raise ValueError("a pca guard requires a non-empty audience (this server's RFC 8707 resource)")
+        if signature_only and authorize is not None:
+            raise ValueError("signature_only and authorize are mutually exclusive")
+        if not signature_only and (verifier is not None or resolve_grant is None):
+            raise ValueError("a pca guard runs the full authorize pipeline by default and needs resolve_grant (and no "
+                             "verifier); pass signature_only=True to verify the signature only")
         self.audience = audience
         self.verifier = _resolve_verifier(verifier, resolve_grant)
         self.key = key
+        self._authorize = None if signature_only else _authorize_options(authorize)
+        self._resolve_grant = resolve_grant
+        self._now = now
 
-    def decide(self, required: Capability, *, deps: object = None, arguments: object = None) -> PCADecision:
-        """Decide one tool call without any Pydantic AI types. Pure and fail-closed."""
+    def decide(self, required: Capability, *, deps: object = None, arguments: object = None,
+               params: Any = None) -> PCADecision:
+        """Decide one tool call without any Pydantic AI types. Pure and fail-closed.
+
+        Authorize mode (the default; not ``signature_only``): ``params`` are the call arguments the proof must be bound to; the
+        operation is ``required`` (an exact ``verb:resource``; a wildcard capability is refused).
+        """
         pcactn, err = extract_pcactn(deps, arguments, key=self.key)
         if pcactn is None:
             reason = "no PCActn presented" if err == "absent" else "PCActn could not be decoded"
             return PCADecision(allow=False, required=required, reason=reason)
+        if self._authorize is not None:
+            return self._decide_authorized(required, pcactn, params)
 
         verdict = self.verifier.verify(pcactn, audience=self.audience)
         if not verdict.allow:
@@ -190,6 +223,16 @@ class PCAGuard:
 
         return PCADecision(allow=True, required=required, verdict=verdict, pcactn=pcactn)
 
+    def _decide_authorized(self, required: Capability, pcactn: PCActn, params: Any) -> PCADecision:
+        from atlas_pca.authorize import authorize_tool_call  # atlas-pca 0.5+
+
+        exact = "*" not in required.verb and "*" not in required.resource
+        r = authorize_tool_call(self._authorize, pcactn, verb=required.verb if exact else None,
+                                resource=required.resource if exact else None, params=params,
+                                audience=self.audience, resolve_grant=self._resolve_grant, now=self._now)
+        return PCADecision(allow=r.allow, required=required, verdict=r.verdict, pcactn=pcactn,
+                           reason=None if r.allow else r.reason, authorization=r)
+
     def wrap(self, func: "F", require: Union[str, Capability]) -> "F":
         """Wrap a tool function so it enforces ``require`` before running. Preserves the signature."""
         required = parse_capability(require)
@@ -198,7 +241,12 @@ class PCAGuard:
 
         def evaluate(args: "tuple[object, ...]", kwargs: "Dict[str, object]") -> PCADecision:
             deps = _deps_of(takes_ctx, args)
-            decision = self.decide(required, deps=deps, arguments=kwargs)
+            if self._authorize is None:
+                decision = self.decide(required, deps=deps, arguments=kwargs)
+            else:
+                # the call arguments (positional ones beyond the RunContext cannot be bound: refused)
+                bound = clean(kwargs) if len(args) <= (1 if takes_ctx else 0) else None
+                decision = self.decide(required, deps=deps, arguments=kwargs, params=bound)
             decision.tool = tool_name
             return decision
 
@@ -244,6 +292,9 @@ def pca_tool(
     verifier: Optional[Verifier] = None,
     resolve_grant: Optional[GrantResolver] = None,
     key: str = PCA_KEY,
+    authorize: Any = None,
+    now: Optional[int] = None,
+    signature_only: bool = False,
 ) -> Callable[[F], F]:
     """Make one Pydantic AI tool proof-carrying + policy-gated.
 
@@ -255,16 +306,24 @@ def pca_tool(
 
     ``require``       — the ``"verb:resource"`` capability the proof's ``action`` must satisfy.
     ``audience``      — this tool server's RFC 8707 resource id; the PCActn's signed ``aud`` must equal it.
-    ``verifier``      — a :class:`~atlas_pca_pydantic_ai.verifier.Verifier`; omit it and pass
-                        ``resolve_grant`` to use the default :class:`CoreVerifier`.
-    ``resolve_grant`` — ``grant_ref -> grant | None``, mapping the PCActn's ``grant_ref`` to the root grant.
+    ``verifier``      — a :class:`~atlas_pca_pydantic_ai.verifier.Verifier`; only with ``signature_only=True``.
+    ``resolve_grant`` — ``grant_ref -> grant | None``, mapping the PCActn's ``grant_ref`` to the root grant; required.
+    ``authorize``     — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its
+                        fields: ``state_store``, ``is_revoked``, ...). The proof must be for exactly this call
+                        (``require``, which must be an exact ``verb:resource``, with the keyword arguments as params),
+                        and the grant's predicates and caveats, revocation and the replay counter are enforced
+                        before the tool runs. Needs ``resolve_grant``. Without ``authorize`` every call is refused
+                        (``authorize_config``). ``now`` fixes its clock.
+    ``signature_only`` — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                        only (no policy, replay or revocation). Cannot be combined with ``authorize``.
 
     Stack it under Pydantic AI's own tool decorator (the signature is preserved either way)::
 
         @agent.tool
-        @pca_tool("write:db/orders", audience="agent://orders", resolve_grant=my_resolver)
+        @pca_tool("write:db/orders", audience="agent://orders", resolve_grant=my_resolver, authorize=options)
         def transfer(ctx: RunContext[PCADeps], amount: int) -> str:
             ...
     """
-    guard = PCAGuard(audience=audience, verifier=verifier, resolve_grant=resolve_grant, key=key)
+    guard = PCAGuard(audience=audience, verifier=verifier, resolve_grant=resolve_grant, key=key, authorize=authorize,
+                     now=now, signature_only=signature_only)
     return guard.tool(require)

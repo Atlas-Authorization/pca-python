@@ -1126,7 +1126,7 @@ def validate_wire_v2(p: Any) -> Optional[str]:
 #
 # Normative rules: packages/pca/src/intent-binding.ts and conformance/README.md "Intent binding". The optional top-level
 # `intent` slot is SIGNED (part of the canonical body). When present it is an object with EXACTLY the members below
-# (else `wire` fails). The `intent` check runs after `counter` and is reported iff the PCActn carries `intent` OR the
+# (else `wire` fails). The `intent` check runs after `counter_format` and is reported iff the PCActn carries `intent` OR the
 # verifier's intent policy is ACTIVE; otherwise the verdict is the pre-M2 one.
 
 INTENT_GOAL_PREFIX = "pca-intent:v1:"
@@ -1556,7 +1556,7 @@ def verify_artifact_suite(artifact: dict) -> bool:
     return verify_leaf_suite(artifact, artifact.get("ed_pub"), msg)
 
 
-CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter")
+CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter_format")
 
 
 @dataclass
@@ -1564,6 +1564,12 @@ class Verdict:
     allow: bool
     checks: Dict[str, bool] = field(default_factory=dict)
     reason: Optional[str] = None
+    #: Every reason, in order: the first failure (``reason``), then one for EACH further failing intent-v2 check (the
+    #: escalate-class ones). ``decision_of`` reads the whole list, so a multi-check escalation stays an escalation.
+    reasons: List[str] = field(default_factory=list)
+    #: Rule 21 compatibility mode in effect (``model_polarity: "legacy"`` and a grant reads a model-derived path in ``where``):
+    #: the verdict is reported ``degraded`` in the assurance report and refused by any ``require_assurance``.
+    legacy_model_polarity: bool = False
 
 
 def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[int] = None,
@@ -1604,6 +1610,8 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
     checks: Dict[str, bool] = {name: False for name in CHECK_ORDER}
     checks["wire"] = True
     reason: List[Optional[str]] = [None]
+    v2_checks: List[dict] = []
+    legacy = [False]
 
     def fail(name: str, why: str) -> None:
         checks[name] = False
@@ -1682,9 +1690,9 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
 
         c = p["counter"]
         if _is_safe_int(c) and c >= 0:
-            checks["counter"] = True
+            checks["counter_format"] = True
         else:
-            fail("counter", "not a non-negative safe integer")
+            fail("counter_format", "missing or not a non-negative safe integer")
 
         # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
         # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1698,7 +1706,10 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
         # Intent Layer v2: `schema` (14), `intent_session` (13), `layers` (V5), `accumulators` (15), `map` (19), then the W-B unit
         # `facts` / `provenance` / `classes` (16-18); each reported only under its condition (see intent_v2.py).
         from .intent_v2 import decide_intent_v2  # deferred: intent_v2 imports this module
-        for c in decide_intent_v2(p, grant, intent_v2, now)["checks"]:
+        v2_decision = decide_intent_v2(p, grant, intent_v2, now)
+        legacy[0] = v2_decision.get("legacy_model_polarity") is True
+        v2_checks.extend(v2_decision["checks"])
+        for c in v2_checks:
             if c["ok"]:
                 checks[c["name"]] = True
             else:
@@ -1706,7 +1717,11 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
     except Exception as e:  # malformed input never raises; it simply denies
         if reason[0] is None:
             reason[0] = "malformed PCActn: %s" % e
-    return Verdict(allow=all(checks.values()), checks=checks, reason=reason[0])
+    from .decision import fold_v2_reasons  # deferred: decision imports predicates, which must not import this module
+    allow = all(checks.values())
+    return Verdict(allow=allow, checks=checks, reason=reason[0],
+                   reasons=[] if allow else fold_v2_reasons([] if reason[0] is None else [reason[0]], v2_checks),
+                   legacy_model_polarity=legacy[0])
 
 
 # ---- policy layer: caveat evaluation (0.4.1) -----------------------------------------------------------------------

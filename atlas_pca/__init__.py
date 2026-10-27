@@ -96,9 +96,53 @@ from .intent_wb import (  # noqa: F401  (Intent Layer v2 W-B: rules 16-18)
 )
 from .intent_layers import decide_layer_ceilings  # noqa: F401  (V5 ceilings)
 from .predicates import evaluate_predicates, predicate_matches  # noqa: F401  (the predicate DSL)
+from .decision import (decide_tighten, decide_units, decision_of, fold_v2_reasons, meet, meet_all, model_paths_read, pep_decision,  # noqa: F401
+                       tighten)  # (ternary decision, rules 20-21)
 from .server import (  # noqa: F401  (framework-agnostic guard; imports only from .pca)
     PCAResult,
     challenge,
     extract_pcactn,
     require_pca,
 )
+from .authorize import (  # noqa: F401  (0.5: the full authorization pipeline, opt-in)
+    AuthorizedOperation,
+    AuthorizeOptions,
+    AuthorizeResult,
+    ClaimResult,
+    MemoryStateStore,
+    SqliteStateStore,
+    StateStore,
+    assurance_report,
+    authorize,
+    authorize_tool_call,
+    evaluate_agent_caveats,
+    evaluate_tool_schema,
+    is_authorized_for,
+    missing_authorize_components,
+    read_envelope,
+    root_caveats,
+    unmet_assurance,
+)
+
+from .passport import verify_passport  # noqa: F401,E402  (signed agent passport, wire level)
+from .ledger import (  # noqa: F401  (transparency ledger: proofs, tree heads, witnesses)
+    EMPTY_TREE_ROOT,
+    detect_equivocation,
+    verify_checkpoint_chain,
+    verify_head_consistency,
+    verify_ledger_consistency,
+    verify_ledger_inclusion,
+    verify_tree_head,
+    verify_witness_cosignature,
+    verify_witness_cosignatures,
+    verify_witnessed_head,
+)
+from .optimistic import (  # noqa: F401  (optimistic path: claims, challenge window, fraud proofs, settlement records)
+    challenge_window_end,
+    claim_check,
+    claim_status,
+    fraud_proof_wire_check,
+    settlement_wire_check,
+    within_challenge_window,
+)
+from .attest import verifier_from_config  # noqa: F401,E402  (vendor hardware-attestation verifiers; needs the `attest` extra at call time)

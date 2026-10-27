@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Full adversarial corpus from the flagship
         shell: bash
-        run: .github/scripts/fetch-flagship-corpus.sh $([ "$RUNNER_OS" = Windows ] || echo --less)
+        run: .github/scripts/fetch-flagship-corpus.sh --layout $([ "$RUNNER_OS" = Windows ] || echo --less)
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -43,8 +43,23 @@ jobs:
           python -m pip install -e ".[fast,pq,fastapi,django]" pytest httpx
       - name: Conformance corpus
         run: python test_conformance.py
+      - name: Decision vectors (units, tighten-only, decision lattice, multi-check fold, escalation answers under every suite, rules 20-21 end to end)
+        run: |
+          test -s conformance/decision-vectors.json || test -s packages/pca/conformance/decision-vectors.json
+          test -s conformance/model-rules-vectors.json || test -s packages/pca/conformance/model-rules-vectors.json
+          python -m pytest -q test_decision_conformance.py test_escalation_guard.py test_model_rules.py
       - name: Unit tests
         run: python -m pytest -q --ignore=packages
+      # the vendor attestation verifiers (AMD SEV-SNP, Intel TDX, Azure MAA, Google Confidential Space, NVIDIA GPU) and the strict
+      # X.509 readers replay packages/pca/conformance/attestation-evidence-vectors.json (fetched above with the flagship corpus), and
+      # verify_passport replays the passport_hardware_vectors table of passport-vectors.json. Both are produced by the TypeScript
+      # reference (the pca repository's CI checks they are current): a missing file or table FAILS, it never skips, and here the
+      # `cryptography` package is required (PCA_REQUIRE_ATTEST), where the dependency-free job below skips the crypto-backed tests.
+      # Already part of the step above: run on their own so a regression in the verifiers is visible as its own step.
+      - name: Attestation verifiers (vendor vectors, strict DER, fail-closed tables)
+        env:
+          PCA_REQUIRE_ATTEST: '1'
+        run: python -m pytest -q test_attestation_vectors.py test_attest_units.py test_passport_conformance.py
 
   verifier-dep-free:
     # the base package declares no dependencies: the pure-Python fallbacks must pass on their own
@@ -103,3 +118,15 @@ jobs:
       - name: End-to-end suite against the real framework
         working-directory: packages/${{ matrix.fw }}
         run: python -m pytest -q test_real_*.py
+
+  maturity:
+    name: every published package declares its maturity tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # tier in every manifest, a matching "Maturity:" line in every README header, experimental said where it applies
+      - run: node .github/scripts/maturity-check.mjs
