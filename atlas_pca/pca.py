@@ -942,6 +942,8 @@ PCACTN_OPTIONAL_FIELDS = (
     "intent",
     # Intent Layer v2 (additive, SIGNED): the session member (see validate_intent_session_wire, conformance rule 13).
     "intent_session",
+    # Consistency token (additive, SIGNED): the `fresh_at` member (see atlas_pca.fresh_at).
+    "fresh_at",
 )
 _KNOWN = frozenset(PCACTN_REQUIRED_FIELDS + PCACTN_OPTIONAL_FIELDS)
 
@@ -1101,6 +1103,11 @@ def validate_wire_v2(p: Any) -> Optional[str]:
             session_err = validate_intent_session_wire(p["intent_session"])
             if session_err is not None:
                 return session_err
+        if "fresh_at" in p:
+            from .fresh_at import validate_fresh_at_wire  # deferred: fresh_at imports this module
+            fresh_err = validate_fresh_at_wire(p["fresh_at"])
+            if fresh_err is not None:
+                return fresh_err
         if "prohibition_evidence" in p and not isinstance(p["prohibition_evidence"], (dict, list)):
             return "'prohibition_evidence' must be an object or array"
         if "threshold" in p:
@@ -1126,12 +1133,13 @@ def validate_wire_v2(p: Any) -> Optional[str]:
 #
 # Normative rules: packages/pca/src/intent-binding.ts and conformance/README.md "Intent binding". The optional top-level
 # `intent` slot is SIGNED (part of the canonical body). When present it is an object with EXACTLY the members below
-# (else `wire` fails). The `intent` check runs after `counter` and is reported iff the PCActn carries `intent` OR the
+# (else `wire` fails). The `intent` check runs after `counter_format` and is reported iff the PCActn carries `intent` OR the
 # verifier's intent policy is ACTIVE; otherwise the verdict is the pre-M2 one.
 
 INTENT_GOAL_PREFIX = "pca-intent:v1:"
 # Intent Layer v2 session grants (G_0 and the delta grants D_k): `pca-intent:v2:<session>:<map_digest>` (rule 13).
 INTENT_GOAL_V2_PREFIX = "pca-intent:v2:"
+INTENT_GOAL_V3_PREFIX = "pca-intent:v3:"  # goal binding v3: the signed Goal IR + the compiled policy
 # Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
 INTENT_GOAL_V2C_PREFIX = "pca-intent:v2c:"
 MAP_FORM_COMMIT = "commit"
@@ -1184,10 +1192,34 @@ def intent_goal_commit(ref: str, map_digest: str, goal_salt: str, session: Optio
     return hash_canonical({"d": INTENT_GOAL_COMMIT_DOMAIN, "goal": goal, "salt": goal_salt})
 
 
+def is_approved_goal_ref(v: Any) -> bool:
+    """A well-formed `approved_goal`: a closed object of exactly `goal_digest` and `policy_digest`, both canonical
+    base64url of 32 bytes."""
+    return (isinstance(v, dict) and len(v) == 2 and decode_b64u_strict(v.get("goal_digest"), 32) is not None
+            and decode_b64u_strict(v.get("policy_digest"), 32) is not None)
+
+
+def intent_goal_v3(ref: Any) -> str:
+    """The goal v3 string `pca-intent:v3:<goal_digest>:<policy_digest>`. Raises ValueError on a malformed digest: never
+    commit to garbage."""
+    if not is_approved_goal_ref(ref):
+        raise ValueError("intent_goal_v3: goal_digest and policy_digest must be canonical base64url (32 bytes)")
+    return INTENT_GOAL_V3_PREFIX + ref["goal_digest"] + ":" + ref["policy_digest"]
+
+
+def intent_goal_commit_v3(ref: Any, goal_salt: str) -> str:
+    """The goal v3 commitment for a salt (the same domain and hash as :func:`intent_goal_commit`)."""
+    return hash_canonical({"d": INTENT_GOAL_COMMIT_DOMAIN, "goal": intent_goal_v3(ref), "salt": goal_salt})
+
+
+_MISSING = object()
+
+
 def intent_policy_active(policy: Any) -> bool:
-    """True iff the policy is active: `require` is exactly True, or either threshold key is present."""
+    """True iff the policy is active: `require` is exactly True, a threshold key or `approved_goal` is present."""
     return isinstance(policy, dict) and (
-        policy.get("require") is True or "min_fidelity_ppm" in policy or "max_residual_risk_ppm" in policy)
+        policy.get("require") is True or "min_fidelity_ppm" in policy or "max_residual_risk_ppm" in policy
+        or "approved_goal" in policy)
 
 
 def root_goal_commit(grant: Any) -> Optional[str]:
@@ -1219,12 +1251,18 @@ def decide_intent_binding(intent: Any, grant: Any, policy: Any = None, session: 
         if ("min_fidelity_ppm" in pol and not (_is_safe_int(lo) and lo >= 0)) or \
                 ("max_residual_risk_ppm" in pol and not (_is_safe_int(hi) and hi >= 0)):
             return "fail", "intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)"
+        v3 = pol.get("approved_goal", _MISSING)
+        if v3 is not _MISSING and not is_approved_goal_ref(v3):
+            return "fail", "intent policy misconfigured: approved_goal digests must be canonical base64url (32 bytes) (fail closed)"
         if intent is None:
             return "fail", "this verifier requires an intent binding but the PCActn carries none"
         commit = root_goal_commit(grant)
         if commit is None:
             return "fail", "the root grant carries no envelope goal commitment to bind the intent to"
-        if intent_goal_commit(intent["ref"], intent["map_digest"], intent["goal_salt"], session, map_form) != commit:
+        if v3 is not _MISSING:
+            if intent_goal_commit_v3(v3, intent["goal_salt"]) != commit:
+                return "fail", "the root grant's goal commitment does not open to the approved goal and compiled policy (v3)"
+        elif intent_goal_commit(intent["ref"], intent["map_digest"], intent["goal_salt"], session, map_form) != commit:
             return "fail", "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"
         if lo is not None and intent["fidelity_ppm"] < int(lo):
             return "fail", "intent fidelity %d ppm is below the policy minimum %d" % (intent["fidelity_ppm"], int(lo))
@@ -1556,7 +1594,7 @@ def verify_artifact_suite(artifact: dict) -> bool:
     return verify_leaf_suite(artifact, artifact.get("ed_pub"), msg)
 
 
-CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter")
+CHECK_ORDER = ("wire", "version", "audience", "validity", "chain", "plan_inclusion", "leaf_signature", "counter_format")
 
 
 @dataclass
@@ -1564,11 +1602,18 @@ class Verdict:
     allow: bool
     checks: Dict[str, bool] = field(default_factory=dict)
     reason: Optional[str] = None
+    #: Every reason, in order: the first failure (``reason``), then one for EACH further failing intent-v2 check (the
+    #: escalate-class ones). ``decision_of`` reads the whole list, so a multi-check escalation stays an escalation.
+    reasons: List[str] = field(default_factory=list)
+    #: Rule 21 compatibility mode in effect (``model_polarity: "legacy"`` and a grant reads a model-derived path in ``where``):
+    #: the verdict is reported ``degraded`` in the assurance report and refused by any ``require_assurance``.
+    legacy_model_polarity: bool = False
 
 
 def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[int] = None,
                        audience: Optional[str] = None, allowed_suites=None,
-                       intent_policy: Optional[dict] = None, intent_v2: Optional[dict] = None) -> Verdict:
+                       intent_policy: Optional[dict] = None, intent_v2: Optional[dict] = None,
+                       fresh_at: Optional[dict] = None) -> Verdict:
     """Verify a v2 PCActn. `p` is a parsed object OR raw JSON text/bytes (which goes through the strict profile;
     a parse failure is a `wire` failure). `audience` is this verifier's own id; omitting it fails closed.
     `now` is epoch milliseconds (default: wall clock). Never raises (R6-05: TOTAL on any input, including the
@@ -1580,14 +1625,19 @@ def verify_pcactn_core(p: Union[dict, str, bytes], grant: dict, now: Optional[in
     `acc: {state, monitors, receipts, last_seq, sequencer_keys, keyset_versions}`, `map: {disclosure}`,
     `wb: {artifacts, policy}`); the v2 checks `schema`, `intent_session`, `layers`, `accumulators`, `map`, `facts`,
     `provenance`, `classes` follow `intent`, each reported only under its condition (see
-    atlas_pca.intent_v2.decide_intent_v2), and `allow` requires every reported one."""
+    atlas_pca.intent_v2.decide_intent_v2), and `allow` requires every reported one.
+    `fresh_at` is the consistency-token policy `{signer, scope, local: {revocation_epoch, ledger_tree_size, budget_version,
+    policy_revision, policy_digest}, max_token_age_ms?, require?, side_carried?}` (see atlas_pca.fresh_at): the `fresh_at` check
+    follows the intent checks and is reported only when the PCActn carries the member, a side-carried token is read (`side_carried`
+    key present, read only when there is no member) or the policy requires one; a PCActn with the member and no policy is refused."""
     try:
-        return _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy, intent_v2)
+        return _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy, intent_v2, fresh_at)
     except Exception as e:  # noqa: BLE001 - totality: a residual fault on hostile input is a wire refusal
         return Verdict(False, {"wire": False}, "wire: malformed input (%s)" % type(e).__name__)
 
 
-def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy=None, intent_v2=None) -> Verdict:
+def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, intent_policy=None, intent_v2=None,
+                                  fresh_at=None) -> Verdict:
     if isinstance(p, (str, bytes, bytearray)):
         if artifact_too_large(p):  # FIRST: before any parsing
             return Verdict(False, {"wire": False}, "wire: %s" % ARTIFACT_SIZE_REASON)
@@ -1604,6 +1654,8 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
     checks: Dict[str, bool] = {name: False for name in CHECK_ORDER}
     checks["wire"] = True
     reason: List[Optional[str]] = [None]
+    v2_checks: List[dict] = []
+    legacy = [False]
 
     def fail(name: str, why: str) -> None:
         checks[name] = False
@@ -1682,9 +1734,9 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
 
         c = p["counter"]
         if _is_safe_int(c) and c >= 0:
-            checks["counter"] = True
+            checks["counter_format"] = True
         else:
-            fail("counter", "not a non-negative safe integer")
+            fail("counter_format", "missing or not a non-negative safe integer")
 
         # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
         # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1698,15 +1750,30 @@ def _verify_pcactn_core_unchecked(p, grant, now, audience, allowed_suites, inten
         # Intent Layer v2: `schema` (14), `intent_session` (13), `layers` (V5), `accumulators` (15), `map` (19), then the W-B unit
         # `facts` / `provenance` / `classes` (16-18); each reported only under its condition (see intent_v2.py).
         from .intent_v2 import decide_intent_v2  # deferred: intent_v2 imports this module
-        for c in decide_intent_v2(p, grant, intent_v2, now)["checks"]:
+        v2_decision = decide_intent_v2(p, grant, intent_v2, now)
+        legacy[0] = v2_decision.get("legacy_model_polarity") is True
+        v2_checks.extend(v2_decision["checks"])
+        for c in v2_checks:
             if c["ok"]:
                 checks[c["name"]] = True
             else:
                 fail(c["name"], c.get("reason") or "rejected")
+        # Consistency token: `fresh_at` (right after the intent checks; a failing escalate-class reason folds into `reasons`).
+        from .fresh_at import ABSENT, decide_fresh_at  # deferred: fresh_at imports this module
+        fa = decide_fresh_at(p["fresh_at"] if "fresh_at" in p else ABSENT, fresh_at, now)
+        if fa["status"] == "pass":
+            checks["fresh_at"] = True
+        elif fa["status"] == "fail":
+            fail("fresh_at", fa["reason"])
+            v2_checks.append({"name": "fresh_at", "ok": False, "reason": fa["reason"]})
     except Exception as e:  # malformed input never raises; it simply denies
         if reason[0] is None:
             reason[0] = "malformed PCActn: %s" % e
-    return Verdict(allow=all(checks.values()), checks=checks, reason=reason[0])
+    from .decision import fold_v2_reasons  # deferred: decision imports predicates, which must not import this module
+    allow = all(checks.values())
+    return Verdict(allow=allow, checks=checks, reason=reason[0],
+                   reasons=[] if allow else fold_v2_reasons([] if reason[0] is None else [reason[0]], v2_checks),
+                   legacy_model_polarity=legacy[0])
 
 
 # ---- policy layer: caveat evaluation (0.4.1) -----------------------------------------------------------------------

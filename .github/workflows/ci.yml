@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Full adversarial corpus from the flagship
         shell: bash
-        run: .github/scripts/fetch-flagship-corpus.sh $([ "$RUNNER_OS" = Windows ] || echo --less)
+        run: .github/scripts/fetch-flagship-corpus.sh --layout $([ "$RUNNER_OS" = Windows ] || echo --less)
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -43,8 +43,103 @@ jobs:
           python -m pip install -e ".[fast,pq,fastapi,django]" pytest httpx
       - name: Conformance corpus
         run: python test_conformance.py
+      # the action-kit shared vectors (conformance/actions: ActionDef parse, canonical digest, trait expansion, rule 22, pack proofs,
+      # ActionSchema v2): a missing directory FAILS, it is never skipped
+      - name: actions-vectors
+        run: |
+          test -s conformance/actions/pack-builtin.json
+          python -m unittest test_actions_vectors
+      - name: Decision vectors (units, tighten-only, decision lattice, multi-check fold, escalation answers under every suite, rules 20-21 end to end)
+        run: |
+          test -s conformance/decision-vectors.json || test -s packages/pca/conformance/decision-vectors.json
+          test -s conformance/model-rules-vectors.json || test -s packages/pca/conformance/model-rules-vectors.json
+          python -m pytest -q test_decision_conformance.py test_escalation_guard.py test_model_rules.py
+      - name: Caveat language v2 vectors (discharges, narrow, max_uses, derive, spiffe_bound, K1 evaluation)
+        run: |
+          test -s conformance/caveat-lang-vectors.json || test -s packages/pca/conformance/caveat-lang-vectors.json
+          python -m pytest -q test_caveat_lang.py test_k1_authorize.py
+      - name: Forbid-wins certificate and linked policy template vectors (a missing file fails, never skips)
+        run: |
+          test -s conformance/forbid-certificate-vectors.json || test -s packages/pca/conformance/forbid-certificate-vectors.json
+          test -s conformance/policy-link-vectors.json || test -s packages/pca/conformance/policy-link-vectors.json
+          python -m pytest -q test_forbid_certificate.py test_policy_link.py
+      - name: K3 operational-plane artifacts and the fresh_at PCActn member (shared k3-vectors.json and fresh-at-vectors.json; a missing file fails, never skips)
+        run: |
+          test -s conformance/k3-vectors.json || test -s packages/pca/conformance/k3-vectors.json
+          test -s conformance/fresh-at-vectors.json || test -s packages/pca/conformance/fresh-at-vectors.json
+          python -m pytest -q test_k3_vectors.py test_fresh_at_vectors.py
+      - name: Agent / issuer side (producer vectors byte for byte; round trips through the verifiers; ML-DSA hybrids)
+        env:
+          PCA_REQUIRE_PQ: ${{ runner.os == 'Linux' && '1' || '0' }} # the `pq` extra (dilithium-py) is installed above; SLH-DSA signing is tested where OpenSSL >= 3.5 is present
+        run: |
+          test -s conformance/producer-vectors.json || test -s packages/pca/conformance/producer-vectors.json
+          python -m pytest -q test_agent_producer.py
+      - name: pca_grant authorization-details type (shared pca-grant-vectors.json; a missing file fails, never skips)
+        run: |
+          test -s conformance/pca-grant-vectors.json || test -s packages/pca/conformance/pca-grant-vectors.json
+          test -s conformance/blueprint-vectors.json || test -s packages/pca/conformance/blueprint-vectors.json
+          test -s conformance/k4-vectors.json || test -s packages/pca/conformance/k4-vectors.json
+          test -s conformance/a2a-vectors.json || test -s packages/pca/conformance/a2a-vectors.json
+          python -m pytest -q test_pca_grant_vectors.py test_blueprint_vectors.py test_a2a_vectors.py test_k4_vectors.py
+          test -s conformance/workflow-vectors.json || test -s packages/pca/conformance/workflow-vectors.json
+          test -s conformance/readside-vectors.json || test -s packages/pca/conformance/readside-vectors.json
+          python -m pytest -q test_pca_grant_vectors.py test_blueprint_vectors.py test_a2a_vectors.py test_k5_vectors.py
+      - name: K5 vault, aggregate reads and workflow admission inside authorize (shared vault-aggregate-vectors.json and authorize-workflow-fixtures.json; a missing file fails, never skips)
+        run: |
+          test -s conformance/vault-aggregate-vectors.json || test -s packages/pca/conformance/vault-aggregate-vectors.json
+          test -s conformance/authorize-workflow-fixtures.json || test -s packages/pca/conformance/authorize-workflow-fixtures.json
+          python -m pytest -q test_k5_read_vault.py test_k5_authorize_workflow.py test_k5_middleware_workflow.py
+          test -s conformance/lease-vectors.json || test -s packages/pca/conformance/lease-vectors.json
+          test -s conformance/obligations-vectors.json || test -s packages/pca/conformance/obligations-vectors.json
+          test -s conformance/break-glass-vectors.json || test -s packages/pca/conformance/break-glass-vectors.json
+          test -s conformance/missing-context-vectors.json || test -s packages/pca/conformance/missing-context-vectors.json
+          test -s conformance/policy-classes-vectors.json || test -s packages/pca/conformance/policy-classes-vectors.json
+          python -m pytest -q test_pca_grant_vectors.py test_blueprint_vectors.py test_a2a_vectors.py test_lease_vectors.py test_obligations_vectors.py test_break_glass_vectors.py test_missing_context_vectors.py test_policy_classes_vectors.py test_policy_link.py
+          python -m pytest -q test_pca_grant_vectors.py test_blueprint_vectors.py test_a2a_vectors.py
+      - name: Build provenance gates (shared provenance-vectors.json; a missing file fails, never skips)
+        run: |
+          test -s conformance/provenance-vectors.json || test -s packages/pca/conformance/provenance-vectors.json
+          python -m pytest -q test_provenance_vectors.py
+      - name: Offline Sigstore bundle verification (shared sigstore-vectors.json; the sigstore extra)
+        run: |
+          test -s conformance/sigstore-vectors.json || test -s packages/pca/conformance/sigstore-vectors.json
+          python -m pip install 'cryptography>=42'
+          python -m unittest -v test_sigstore_vectors
       - name: Unit tests
         run: python -m pytest -q --ignore=packages
+      - name: Extension-layer vectors (optimistic path and transparency ledger), on their own
+        run: python -m pytest -q test_ext_vectors.py
+      - name: Every test file is collected (a test file that pytest does not pick up fails the job)
+        run: |
+          python -m pytest --collect-only -q --ignore=packages | grep -o '^test_[A-Za-z0-9_]*\.py' | sort -u > "$RUNNER_TEMP/collected.txt"
+          ls test_*.py | sort > "$RUNNER_TEMP/all.txt"
+          diff "$RUNNER_TEMP/all.txt" "$RUNNER_TEMP/collected.txt"
+      # the vendor attestation verifiers (AMD SEV-SNP, Intel TDX, Azure MAA, Google Confidential Space, NVIDIA GPU) and the strict
+      # X.509 readers replay packages/pca/conformance/attestation-evidence-vectors.json (fetched above with the flagship corpus), and
+      # verify_passport replays the passport_hardware_vectors table of passport-vectors.json. Both are produced by the TypeScript
+      # reference (the pca repository's CI checks they are current): a missing file or table FAILS, it never skips, and here the
+      # `cryptography` package is required (PCA_REQUIRE_ATTEST), where the dependency-free job below skips the crypto-backed tests.
+      # Already part of the step above: run on their own so a regression in the verifiers is visible as its own step.
+      - name: Attestation verifiers (vendor vectors, strict DER, fail-closed tables)
+        env:
+          PCA_REQUIRE_ATTEST: '1'
+        run: python -m pytest -q test_attestation_vectors.py test_attest_units.py test_passport_conformance.py test_allowlist_anchor_conformance.py
+      - name: Mesh trust verifier (whole cross-domain proofs, reason and hop per vector)
+        run: python -m pytest -q test_mesh.py
+      - name: Goal binding v3 (approved_goal commitments, invalid digests, binding rules)
+        run: python -m pytest -q test_goal_commit_v3.py
+      - name: Revocation staleness (age cap, per-class windows, signed epoch, gate, authorize wiring)
+        run: python -m pytest -q test_revocation_staleness.py
+      - name: Operation records (at-most-once execution, recovery, executor, concurrency, durable store)
+        run: python -m pytest -q test_operations.py
+      - name: Plan lifecycle (draft to revoked, Merkle root, check, concurrency, durable store, authorize wiring)
+        run: python -m pytest -q test_plan_lifecycle.py
+      - name: Assurance labels (signature level, report, requirement gate, multi-root level)
+        run: python -m pytest -q test_assurance_vectors.py test_assurance.py
+      - name: Step-up client (device key against the RFC 8032 vectors, approve / deny against a fake transport)
+        run: python -m pytest -q test_stepup.py
+      - name: Store conformance helper (passes the shipped stores, fails racy and non-durable ones)
+        run: python -m pytest -q test_store_conformance.py
 
   verifier-dep-free:
     # the base package declares no dependencies: the pure-Python fallbacks must pass on their own
@@ -103,3 +198,15 @@ jobs:
       - name: End-to-end suite against the real framework
         working-directory: packages/${{ matrix.fw }}
         run: python -m pytest -q test_real_*.py
+
+  maturity:
+    name: every published package declares its maturity tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # tier in every manifest, a matching "Maturity:" line in every README header, experimental said where it applies
+      - run: node .github/scripts/maturity-check.mjs

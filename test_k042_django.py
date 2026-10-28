@@ -9,10 +9,11 @@ pytest.importorskip("django")
 
 def _settings():
     s = X._django()
-    for name in ("PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW", "PCA_INTENT_V2", "PCA_INTENT_POLICY"):
+    for name in ("PCA_SIGNATURE_ONLY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW", "PCA_INTENT_V2", "PCA_INTENT_POLICY"):
         if hasattr(s, name):
             delattr(s, name)
     s.PCA_AUDIENCE = X.AUD
+    s.PCA_SIGNATURE_ONLY = True
     s.PCA_RESOLVE_GRANT = X.resolve_for_dotted
     return s
 
@@ -22,7 +23,7 @@ def _clean_settings():
     yield
     from django.conf import settings
 
-    for name in ("PCA_INTENT_V2", "PCA_INTENT_POLICY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
+    for name in ("PCA_INTENT_V2", "PCA_INTENT_POLICY", "PCA_SIGNATURE_ONLY", "PCA_AUDIENCE", "PCA_RESOLVE_GRANT", "PCA_NOW"):
         if settings.configured and hasattr(settings, name):
             delattr(settings, name)
 
@@ -69,3 +70,16 @@ def test_intent_v2_of_the_wrong_type_is_refused(monkeypatch):
         with pytest.raises(ImproperlyConfigured,
                            match=r"^settings\.PCA_INTENT_V2 must be a dict, a callable or a dotted path to a callable$"):
             dj.PCAMiddleware(lambda r: None)
+
+
+def test_fresh_at_setting_reaches_the_guard(monkeypatch):
+    s = _settings()
+    dj, seen = _capture(monkeypatch)
+    dj.PCAMiddleware(lambda r: None)
+    assert seen["fresh_at"] is None
+    s.PCA_FRESH_AT = {"signer": "s"}
+    dj.PCAMiddleware(lambda r: None)
+    assert seen["fresh_at"] == {"signer": "s"}
+    s.PCA_FRESH_AT = "test_server_exact.resolve_for_dotted"
+    dj.PCAMiddleware(lambda r: None)
+    assert seen["fresh_at"] is X.resolve_for_dotted
