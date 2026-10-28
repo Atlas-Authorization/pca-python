@@ -170,7 +170,7 @@ def test_guard_header_whitespace_is_401():
     vec = next(x for x in DOC["vectors"] if x["name"] == "valid-in-plan-action")
     from atlas_pca.pca import b64u, canonical_bytes_strict
     hdr = b64u(canonical_bytes_strict(vec["pcactn"]))
-    guard = require_pca(audience=vec["context"]["aud"], resolve_grant=lambda ref: vec["grant"], now=vec["context"]["now"])
+    guard = require_pca(audience=vec["context"]["aud"], resolve_grant=lambda ref: vec["grant"], now=vec["context"]["now"], signature_only=True)
     ok = guard({"PCA-Action": hdr}, None)
     assert ok.ok is True
     bad = guard({"PCA-Action": hdr + " "}, None)

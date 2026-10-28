@@ -1,0 +1,2631 @@
+[
+ {
+  "name": "scalar-eq",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "eq",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 500
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount == 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scalar-ne",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "ne",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 100
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount != 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scalar-lt",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lt",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 100
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount < 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scalar-lte",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 500
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scalar-gt",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "gt",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 100
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount > 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scalar-gte",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "gte",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 500
+    }
+   }
+  },
+  "allowed": true
+ },
+ {
+  "name": "in-array",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.currency",
+      "op": "in",
+      "value": [
+       "usd",
+       "eur"
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "currency": "gbp"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "currency in [\"usd\", \"eur\"] not satisfied for pay on acct/1"
+ },
+ {
+  "name": "nin-array",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.currency",
+      "op": "nin",
+      "value": [
+       "usd",
+       "eur"
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "currency": "usd"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "currency not in [\"usd\", \"eur\"] not satisfied for pay on acct/1"
+ },
+ {
+  "name": "array-9-items",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.c",
+      "op": "in",
+      "value": [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "c": 99
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "c in [...] not satisfied for pay on acct/1"
+ },
+ {
+  "name": "array-8-items",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.c",
+      "op": "in",
+      "value": [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "c": 99
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "c in [0, 1, 2, 3, 4, 5, 6, 7] not satisfied for pay on acct/1"
+ },
+ {
+  "name": "array-nested",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.c",
+      "op": "in",
+      "value": [
+       [
+        "a"
+       ],
+       {
+        "b": 1
+       },
+       null,
+       true,
+       1.5,
+       "x"
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "c": 99
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "c in [<value>, <value>, null, true, <number>, \"x\"] not satisfied for pay on acct/1"
+ },
+ {
+  "name": "exists-present",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.note",
+      "op": "exists",
+      "value": true
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "note present not satisfied for pay on acct/1"
+ },
+ {
+  "name": "exists-default",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.note",
+      "op": "exists"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "note present not satisfied for pay on acct/1"
+ },
+ {
+  "name": "exists-absent",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.note",
+      "op": "exists",
+      "value": false
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "note": "x"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "note absent not satisfied for pay on acct/1"
+ },
+ {
+  "name": "ref",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "ref": "env.budget"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 5
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= env.budget not satisfied for pay on acct/1"
+ },
+ {
+  "name": "ref-nonstring",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "ref": 7
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 5
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= <ref> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "ref-null",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "ref": null
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 5
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= <ref> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "ref-wins-over-value",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "ref": "env.b",
+      "value": 3
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 5
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= env.b not satisfied for pay on acct/1"
+ },
+ {
+  "name": "all-of-first-unmet",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "all_of": [
+       {
+        "field": "action.params.amount",
+        "op": "lte",
+        "value": 100
+       },
+       {
+        "field": "action.params.currency",
+        "op": "eq",
+        "value": "usd"
+       },
+       {
+        "field": "action.params.x",
+        "op": "eq",
+        "value": 1
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 50,
+     "currency": "eur",
+     "x": 2
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "currency == \"usd\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "all-of-nested",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "all_of": [
+       {
+        "field": "action.params.a",
+        "op": "eq",
+        "value": 1
+       },
+       {
+        "all_of": [
+         {
+          "field": "action.params.b",
+          "op": "eq",
+          "value": 2
+         },
+         {
+          "all_of": [
+           {
+            "field": "action.params.c",
+            "op": "eq",
+            "value": 3
+           },
+           {
+            "all_of": [
+             {
+              "field": "action.params.d",
+              "op": "eq",
+              "value": 4
+             },
+             {
+              "all_of": [
+               {
+                "field": "action.params.e",
+                "op": "eq",
+                "value": 5
+               },
+               {
+                "all_of": [
+                 {
+                  "field": "action.params.f",
+                  "op": "eq",
+                  "value": 6
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "a": 1,
+     "b": 2,
+     "c": 3,
+     "d": 4,
+     "e": 5,
+     "f": 0
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "all of (e == 5; all of (f == 6)) not satisfied for pay on acct/1"
+ },
+ {
+  "name": "any-of",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "any_of": [
+       {
+        "field": "action.params.a",
+        "op": "eq",
+        "value": 1
+       },
+       {
+        "field": "action.params.b",
+        "op": "eq",
+        "value": "two"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "a": 0,
+     "b": 0
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "any of (a == 1; b == \"two\") not satisfied for pay on acct/1"
+ },
+ {
+  "name": "any-of-9",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "any_of": [
+       {
+        "field": "action.params.a0",
+        "op": "eq",
+        "value": 0
+       },
+       {
+        "field": "action.params.a1",
+        "op": "eq",
+        "value": 1
+       },
+       {
+        "field": "action.params.a2",
+        "op": "eq",
+        "value": 2
+       },
+       {
+        "field": "action.params.a3",
+        "op": "eq",
+        "value": 3
+       },
+       {
+        "field": "action.params.a4",
+        "op": "eq",
+        "value": 4
+       },
+       {
+        "field": "action.params.a5",
+        "op": "eq",
+        "value": 5
+       },
+       {
+        "field": "action.params.a6",
+        "op": "eq",
+        "value": 6
+       },
+       {
+        "field": "action.params.a7",
+        "op": "eq",
+        "value": 7
+       },
+       {
+        "field": "action.params.a8",
+        "op": "eq",
+        "value": 8
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "any of (a0 == 0; a1 == 1; a2 == 2; a3 == 3; a4 == 4; a5 == 5; a6 == 6; a7 == 7) not satisfied for pay on acct/1"
+ },
+ {
+  "name": "not",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "not": {
+       "field": "action.params.region",
+       "op": "eq",
+       "value": "eu"
+      }
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "region": "eu"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "not (region == \"eu\") not satisfied for pay on acct/1"
+ },
+ {
+  "name": "not-group-depth",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "not": {
+       "any_of": [
+        {
+         "field": "action.params.a",
+         "op": "eq",
+         "value": 1
+        },
+        {
+         "not": {
+          "field": "action.params.b",
+          "op": "eq",
+          "value": 2
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "a": 1,
+     "b": 3
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "not (any of (a == 1; (...))) not satisfied for pay on acct/1"
+ },
+ {
+  "name": "group-depth-2-in-any",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "any_of": [
+       {
+        "any_of": [
+         {
+          "all_of": [
+           {
+            "field": "action.params.a",
+            "op": "eq",
+            "value": 1
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "a": 0
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "any of (any of ((...))) not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-long",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"...\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-64",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-quote",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "a\"b"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"...\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-backslash",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "a\\b"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"...\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-control",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "a\nb"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"...\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-astral",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "a\ud83d\ude00b"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"...\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-bmp-unicode",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": "caf\u00e9"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"caf\u00e9\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "str-empty",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "eq",
+      "value": ""
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "y"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s == \"\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "num-float",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 1.5
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= <number> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "num-float-integral",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 5
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 5 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "num-neg",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "gte",
+      "value": -7
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": -9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount >= -7 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "num-big",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 9007199254740992
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9007199254740992
+    }
+   }
+  },
+  "allowed": true
+ },
+ {
+  "name": "num-max-safe",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 9007199254740991
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9007199254740992
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 9007199254740991 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "num-exp",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 1e+21
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 1e+22
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= <number> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "null",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "eq",
+      "value": null
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 1
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount == null not satisfied for pay on acct/1"
+ },
+ {
+  "name": "bool",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.flag",
+      "op": "eq",
+      "value": true
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "flag": false
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "flag == true not satisfied for pay on acct/1"
+ },
+ {
+  "name": "object-value",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.o",
+      "op": "eq",
+      "value": {
+       "a": 1
+      }
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "o": {
+      "a": 2
+     }
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "o == <value> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "missing-param",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 100 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-prefix",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "prefix",
+      "value": "ab"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "zz"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s starts with \"ab\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-like",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "like",
+      "value": "a*"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "zz"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s like \"a*\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-matches",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "matches",
+      "value": "^a"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "zz"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s matches \"^a\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-is-a",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "is_a",
+      "value": "string"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": 1
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s is a \"string\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-member-of",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "member_of",
+      "value": "group:x"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "u"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s member of \"group:x\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-unknown",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "op": "zzz",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "u"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s <condition> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "op-missing",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.s",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "s": "u"
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "s <condition> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "field-env",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "env.region",
+      "op": "eq",
+      "value": "eu"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   },
+   "env": {
+    "region": "us"
+   }
+  },
+  "allowed": false,
+  "reason": "env.region == \"eu\" not satisfied for pay on acct/1"
+ },
+ {
+  "name": "field-nonstring",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": 5,
+      "op": "eq",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "<field> == 1 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "cond-nonobject",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     "amount<=1"
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "<condition> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "cond-number",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     7
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "<condition> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "cond-null",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     null
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "<condition> not satisfied for pay on acct/1"
+ },
+ {
+  "name": "scope-verb-mismatch",
+  "predicates": [
+   {
+    "verb": "refund",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "no predicate permits pay on acct/1"
+ },
+ {
+  "name": "scope-resource-mismatch",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "other/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "no predicate permits pay on acct/1"
+ },
+ {
+  "name": "empty-list",
+  "predicates": [],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "envelope grants no predicates"
+ },
+ {
+  "name": "where-not-array",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": "nope"
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "no predicate permits pay on acct/1"
+ },
+ {
+  "name": "first-in-scope-wins",
+  "predicates": [
+   {
+    "verb": "refund",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.a",
+      "op": "eq",
+      "value": 1
+     }
+    ]
+   },
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 10
+     }
+    ]
+   },
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 20
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 99
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 10 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "later-in-scope",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "nomatch/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 10
+     }
+    ]
+   },
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 20
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 99
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 20 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "verb-list-and-star",
+  "predicates": [
+   {
+    "verb": [
+     "pay",
+     "refund"
+    ],
+    "resource": "*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 3
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 9
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "amount <= 3 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "first-where-condition",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.a",
+      "op": "eq",
+      "value": 1
+     },
+     {
+      "field": "action.params.b",
+      "op": "eq",
+      "value": 2
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "a": 1,
+     "b": 0
+    }
+   }
+  },
+  "allowed": false,
+  "reason": "b == 2 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "one-allowing-predicate-wins",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 1
+     }
+    ]
+   },
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "action.params.amount",
+      "op": "lte",
+      "value": 100
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {
+     "amount": 50
+    }
+   }
+  },
+  "allowed": true
+ },
+ {
+  "name": "action-params-prefix-only-leading",
+  "predicates": [
+   {
+    "verb": "pay",
+    "resource": "acct/*",
+    "where": [
+     {
+      "field": "x.action.params.q",
+      "op": "eq",
+      "value": 1
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "pay",
+    "resource": "acct/1",
+    "params": {}
+   }
+  },
+  "allowed": false,
+  "reason": "x.action.params.q == 1 not satisfied for pay on acct/1"
+ },
+ {
+  "name": "regex-budget-65",
+  "predicates": [
+   {
+    "verb": "*",
+    "where": [
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "r",
+    "resource": "/",
+    "params": {}
+   },
+   "env": {}
+  },
+  "allowed": false,
+  "reason": "action.verb matches \"r\" not satisfied for r on /"
+ },
+ {
+  "name": "regex-budget-64-allowed",
+  "predicates": [
+   {
+    "verb": "*",
+    "where": [
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     },
+     {
+      "field": "action.verb",
+      "op": "matches",
+      "value": "r"
+     }
+    ]
+   }
+  ],
+  "ctx": {
+   "action": {
+    "verb": "r",
+    "resource": "/",
+    "params": {}
+   },
+   "env": {}
+  },
+  "allowed": true
+ }
+]

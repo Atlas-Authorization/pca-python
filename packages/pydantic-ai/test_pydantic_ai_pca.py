@@ -61,7 +61,7 @@ def _verifier(now=NOW):
 
 
 def _guard(*, audience=AUD, verifier=None):
-    return PCAGuard(audience=audience, verifier=verifier if verifier is not None else _verifier())
+    return PCAGuard(audience=audience, verifier=verifier if verifier is not None else _verifier(), signature_only=True)
 
 
 # ---- a minimal, framework-free stand-in for pydantic_ai.RunContext ------------------
@@ -163,7 +163,7 @@ def test_wrong_audience_is_rejected():
 
 
 def test_unknown_grant_is_rejected():
-    guard = PCAGuard(audience=AUD, verifier=CoreVerifier(resolve_grant=lambda ref: None, now=NOW))
+    guard = PCAGuard(audience=AUD, verifier=CoreVerifier(resolve_grant=lambda ref: None, now=NOW), signature_only=True)
     d = _decide(guard, deps=PCADeps(pca_action=_header_value()))
     assert d.allow is False
     assert d.reason == "unknown_grant"
@@ -189,7 +189,7 @@ def test_resolve_grant_path_builds_core_verifier():
     # Exercise the pca_tool/PCAGuard resolve_grant branch (no explicit verifier). Wall-clock would reject
     # the fixed-time vector on validity, so this only asserts the proof is *parsed and verified* (not a
     # fail-closed extraction error) — the validity check is what the fixed-clock tests cover.
-    guard = PCAGuard(audience=AUD, resolve_grant=_resolver)
+    guard = PCAGuard(audience=AUD, resolve_grant=_resolver, signature_only=True)
     d = _decide(guard, deps=PCADeps(pca_action=_header_value()))
     assert d.verdict is not None  # we got past extraction + grant resolution into the core verifier
 
@@ -256,7 +256,7 @@ def test_pca_tool_signature_matches_spec_and_wraps():
     # pca_tool(require, *, audience, verifier=None, resolve_grant=None) with an explicit verifier.
     ran = []
 
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(ctx: RunContext, amount: int) -> str:
         ran.append(amount)
         return "ok %d" % amount
@@ -265,7 +265,7 @@ def test_pca_tool_signature_matches_spec_and_wraps():
     assert ran == [7]
     # ...and the resolve_grant form.
 
-    @pca_tool(CAP, audience=AUD, resolve_grant=_resolver)
+    @pca_tool(CAP, audience=AUD, resolve_grant=_resolver, signature_only=True)
     def also(ctx: RunContext) -> str:
         return "ok"
 
@@ -277,12 +277,12 @@ def test_pca_tool_signature_matches_spec_and_wraps():
 
 def test_pca_tool_rejects_both_verifier_and_resolve_grant():
     with pytest.raises(ValueError):
-        pca_tool(CAP, audience=AUD, verifier=_verifier(), resolve_grant=_resolver)
+        pca_tool(CAP, audience=AUD, verifier=_verifier(), resolve_grant=_resolver, signature_only=True)
 
 
 def test_pca_tool_requires_audience():
     with pytest.raises(ValueError):
-        pca_tool(CAP, audience="", verifier=_verifier())
+        pca_tool(CAP, audience="", verifier=_verifier(), signature_only=True)
 
 
 def test_tool_plain_no_ctx_uses_arguments_channel():
@@ -362,7 +362,7 @@ def test_pydantic_ai_agent_tool_runs_with_valid_proof():
     ran: list = []
 
     @agent.tool
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(ctx: RealRunContext[PCADeps], amount: int) -> str:
         ran.append(amount)
         return "transferred %d" % amount
@@ -382,7 +382,7 @@ def test_pydantic_ai_agent_tool_rejected_without_proof():
     ran: list = []
 
     @agent.tool
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(ctx: RealRunContext[PCADeps], amount: int) -> str:
         ran.append(amount)
         return "transferred %d" % amount

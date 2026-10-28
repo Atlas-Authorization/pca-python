@@ -56,7 +56,7 @@ def _guard(*, audience=AUD, tool_capability=None, registry=None, policy=None):
                   tool_capability=tool_capability, policy=policy)
     if registry is not None:
         kwargs["registry"] = registry
-    return pca_guard(**kwargs)
+    return pca_guard(**kwargs, signature_only=True)
 
 
 # ---- capability matching (pure) ------------------------------------------------------
@@ -126,7 +126,7 @@ def test_wrong_audience_is_rejected():
 
 
 def test_unknown_grant_is_rejected():
-    guard = pca_guard(audience=AUD, resolve_grant=lambda ref: None, now=NOW)
+    guard = pca_guard(audience=AUD, resolve_grant=lambda ref: None, now=NOW, signature_only=True)
     d = guard.decide("transfer", meta=_meta())
     assert d.allow is False
     assert d.reason == "unknown_grant"

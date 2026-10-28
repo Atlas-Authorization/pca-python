@@ -9,7 +9,7 @@ proof-carrying action for each call and fails closed:
 
 * no proof, or an undecodable one                        -> deny (the function never runs)
 * a proof that does not verify under the core verifier   -> deny (bad signature / chain / validity /
-  wrong audience / unknown grant / replay counter)
+  wrong audience / unknown grant / malformed counter; the counter is format-checked, not replay-checked)
 * a valid proof whose authorized action does not satisfy the function's required capability -> deny
 * otherwise                                              -> allow (``next`` is called; the tool runs)
 
@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Mapping, Optio
 
 from ._proof import PCA_ARG, coerce_pcactn, current_proof
 from .tool import PcaToolDenied
-from .verifier import CoreVerifier, GrantResolver, ToolDecision, Verifier
+from .verifier import AuthorizeVerifier, CoreVerifier, GrantResolver, ToolDecision, Verifier, verify_call
 
 #: How each tool's required capability is chosen. See the module docstring. The callable form receives
 #: the ``AIFunction`` the framework is about to invoke (typed ``object`` — it is a framework value we
@@ -103,6 +103,9 @@ def _read_proof(arguments: object, *, arg_name: str) -> Optional[Dict[str, Any]]
     return coerce_pcactn(current_proof())
 
 
+_SAME: Any = object()
+
+
 def _deny_result(decision: ToolDecision) -> Dict[str, Any]:
     """The tool-result the framework hands back to the model when a call is denied."""
     return {
@@ -147,23 +150,31 @@ class PcaFunctionMiddleware(_FunctionMiddlewareBase):
         self._arg_name = arg_name
 
     def decide(self, *, function: object = None, name: Optional[str] = None,
-               arguments: Optional[Dict[str, Any]] = None) -> ToolDecision:
+               arguments: Optional[Dict[str, Any]] = None, params: Any = _SAME) -> ToolDecision:
         """Decide one tool call without any framework types. Pure and fail-closed.
 
         Note: ``arguments`` is mutated in place to strip the inline ``pca_action`` key, exactly as the
-        real call path does, so the tool never receives the proof as one of its own arguments.
+        real call path does, so the tool never receives the proof as one of its own arguments. ``params``
+        (authorize mode) overrides the arguments bound as the operation's params.
         """
         verb, resource = _split_require(_require_for(function, name, self._require))
         pcactn = _read_proof(arguments, arg_name=self._arg_name)
-        return self._verifier.verify(pcactn, verb=verb, resource=resource, audience=self._audience)
+        return verify_call(self._verifier, pcactn, verb=verb, resource=resource, audience=self._audience,
+                           params=arguments if params is _SAME else params)
 
     async def process(self, context: object, next: NextFn) -> None:
         """Framework hook: verify before the tool runs; allow via ``next``, else deny fail-closed."""
         function = getattr(context, "function", None)
         name = _function_name(function, context)
         arguments = getattr(context, "arguments", None)
+        params: Any = _SAME
+        if not isinstance(arguments, dict) and callable(getattr(arguments, "model_dump", None)):
+            try:  # the framework's parsed-arguments model: its fields are the call's params
+                params = arguments.model_dump()
+            except Exception:
+                params = None
         decision = self.decide(function=function, name=name,
-                               arguments=arguments if isinstance(arguments, dict) else None)
+                               arguments=arguments if isinstance(arguments, dict) else None, params=params)
         if decision.ok:
             await _maybe_await(_call_next(next, context))
             return
@@ -181,16 +192,26 @@ def pca_function_middleware(*, audience: str, require: RequireSpec,
                             resolve_grant: Optional[GrantResolver] = None,
                             verifier: Optional[Verifier] = None, now: Optional[int] = None,
                             raise_on_deny: bool = False,
-                            arg_name: str = PCA_ARG) -> PcaFunctionMiddleware:
+                            arg_name: str = PCA_ARG, authorize: Any = None,
+             signature_only: bool = False) -> PcaFunctionMiddleware:
     """Build the Agent Framework function-invocation middleware that gates every tool with PCA.
 
     ``audience``       — this agent's RFC 8707 resource id; a proof for another audience is rejected.
     ``require``        — a :data:`RequireSpec` choosing each tool's capability (see the module docstring).
-    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required unless ``verifier`` is supplied.
-    ``verifier``       — a :class:`Verifier`; defaults to :class:`CoreVerifier` built from ``resolve_grant``.
-    ``now``            — epoch-ms validity clock (default: wall clock); used only for the default verifier.
+    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required.
+    ``verifier``       — a :class:`Verifier`; only with ``signature_only=True`` (it replaces the authorize pipeline).
+    ``now``            — epoch-ms validity clock (default: wall clock).
     ``raise_on_deny``  — raise :class:`PcaToolDenied` instead of setting a deny result on ``context``.
     ``arg_name``       — the inline proof key in ``arguments`` (default ``"pca_action"``), stripped before the tool runs.
+    ``authorize``      — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its fields:
+                         ``state_store``, ``is_revoked``, ...). The proof must then be for exactly this call (the
+                         tool's capability with the call arguments as params), and the grant's predicates and
+                         caveats, revocation and the replay counter are enforced before the tool runs. Needs
+                         ``resolve_grant`` (not ``verifier``). Put it on ONE gate per tool (the middleware or
+                         ``pca_tool``): each consumes the replay counter.
+    ``signature_only`` — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                         only (no policy, replay or revocation). Cannot be combined with ``authorize``. Without
+                         ``authorize`` every call is refused (``authorize_config``).
 
     Wire it in one line::
 
@@ -204,12 +225,21 @@ def pca_function_middleware(*, audience: str, require: RequireSpec,
                 audience="rs-orders",
                 require={"place_order": "write:db/orders"},
                 resolve_grant=resolve,
+                authorize=options,
             )],
         )
     """
     if not audience:
         raise ValueError("pca_function_middleware requires a non-empty `audience`")
-    if verifier is None:
+    if signature_only and authorize is not None:
+        raise ValueError("pca_function_middleware: signature_only and authorize are mutually exclusive")
+    if not signature_only:
+        if verifier is not None or resolve_grant is None:
+            raise ValueError("pca_function_middleware runs the full authorize pipeline by default and needs `resolve_grant=` (and no "
+                             "`verifier=`); pass `signature_only=True` to verify the signature only")
+        verifier = AuthorizeVerifier(resolve_grant, authorize if authorize is not None else {}, now=now)
+        resolve_grant = None
+    elif verifier is None:
         if resolve_grant is None:
             raise ValueError("pca_function_middleware requires either `verifier=` or `resolve_grant=`")
         verifier = CoreVerifier(resolve_grant, now=now)

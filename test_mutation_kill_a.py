@@ -260,7 +260,7 @@ def test_fastapi_default_detail(monkeypatch):
             pass
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(fa.RequirePCA(audience="a", resolve_grant=lambda r: None)(Req()))
+        asyncio.run(fa.RequirePCA(audience="a", resolve_grant=lambda r: None, signature_only=True)(Req()))
     assert ei.value.status_code == 401
     assert ei.value.detail == "proof-carrying authority required"
     assert ei.value.headers is None

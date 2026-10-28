@@ -26,6 +26,7 @@ from .tool import (  # noqa: F401
     pca_tool,
 )
 from .verifier import (  # noqa: F401
+    AuthorizeVerifier,
     CoreVerifier,
     GrantResolver,
     ToolDecision,
@@ -33,6 +34,7 @@ from .verifier import (  # noqa: F401
 )
 
 __all__ = [
+    "AuthorizeVerifier",
     "BeforeToolCallback",
     "CoreVerifier",
     "GrantResolver",
