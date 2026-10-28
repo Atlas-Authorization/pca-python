@@ -12,20 +12,30 @@ Configure it via Django settings::
     # optional: PCA_NOW = <epoch-ms int>  (testing / fixed clock)
     # optional: PCA_INTENT_POLICY = {"require": True, "min_fidelity_ppm": 900000}  (Intent Layer M2)
     # optional: PCA_INTENT_V2 = {...} or a callable (pcactn) -> dict | None, or its dotted path  (Intent Layer v2 state)
+    # optional: PCA_FRESH_AT = {...} or a callable (pcactn) -> dict | None, or its dotted path  (consistency-token policy;
+    #   the `pca-fresh-at` header is read as the side-carried token when the PCActn has no `fresh_at` member)
+    # the full pipeline is the default (0.5): PCA_AUTHORIZE = AuthorizeOptions(...) or a dict of its fields, or its
+    #   dotted path, with PCA_OPERATION = a callable (request) -> {"verb", "resource", "params"} | None, or its dotted
+    #   path. Without PCA_AUTHORIZE every request is refused (403 authorize_config).
+    # explicit opt-in to the signature only: PCA_SIGNATURE_ONLY = True (cannot be combined with PCA_AUTHORIZE)
 
 Django is imported lazily, so the base ``atlas_pca`` package stays dependency-free
 (``pip install 'atlas-pca[django]'`` pulls Django in).
 """
 from dataclasses import dataclass
+from typing import Optional
 
+from .authorize import AuthorizedOperation
 from .pca import Verdict
-from .server import PCAResult, require_pca
+from .refusal_help import refusal_doc_url
+from .server import PCAResult, as_authorize_options, require_pca
 
 
 @dataclass
 class PCAContext:
     verdict: Verdict
     pcactn: dict
+    operation: Optional[AuthorizedOperation] = None
 
 
 class PCAMiddleware:
@@ -64,14 +74,43 @@ class PCAMiddleware:
         if intent_v2 is not None and not isinstance(intent_v2, dict) and not callable(intent_v2):
             from django.core.exceptions import ImproperlyConfigured
             raise ImproperlyConfigured("settings.PCA_INTENT_V2 must be a dict, a callable or a dotted path to a callable")
+        fresh_at = getattr(settings, "PCA_FRESH_AT", None)
+        if isinstance(fresh_at, str):
+            fresh_at = import_string(fresh_at)
+        authorize = getattr(settings, "PCA_AUTHORIZE", None)
+        if isinstance(authorize, str):
+            authorize = import_string(authorize)
+        try:
+            authorize = as_authorize_options(authorize)
+        except TypeError as exc:
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured("settings.PCA_AUTHORIZE must be an AuthorizeOptions, a dict of its fields "
+                                       "or a dotted path to one") from exc
+        operation = getattr(settings, "PCA_OPERATION", None)
+        if isinstance(operation, str):
+            operation = import_string(operation)
+        signature_only = getattr(settings, "PCA_SIGNATURE_ONLY", False) is True
+        if signature_only and authorize is not None:
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured("settings.PCA_SIGNATURE_ONLY and settings.PCA_AUTHORIZE are mutually exclusive")
+        if authorize is not None and not callable(operation):
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured("settings.PCA_AUTHORIZE needs settings.PCA_OPERATION: a callable "
+                                       "(request) -> {verb, resource, params} or its dotted path")
+        self._authorize = not signature_only
+        self._operation = operation if callable(operation) else None
         self._guard = require_pca(audience=audience, resolve_grant=resolver, now=self._now,
-                                  intent_policy=getattr(settings, "PCA_INTENT_POLICY", None), intent_v2=intent_v2)
+                                  intent_policy=getattr(settings, "PCA_INTENT_POLICY", None), intent_v2=intent_v2,
+                                  signature_only=signature_only,
+                                  fresh_at=fresh_at, **({"authorize": authorize} if authorize is not None else {}))
 
     def _deny(self, result: PCAResult):
         from django.http import JsonResponse
 
         resp = JsonResponse(
-            {"error": result.error or "forbidden", "status": result.status},
+            {"error": result.error or "forbidden", "status": result.status, "decision": result.decision,
+             "doc": refusal_doc_url(result.error or "forbidden"),
+             **({"escalation": result.escalation} if result.escalation else {})},
             status=result.status,
         )
         if result.www_authenticate:
@@ -83,8 +122,16 @@ class PCAMiddleware:
             body = request.body
         except Exception:
             body = None
-        result = self._guard(request.headers, body)
+        if self._authorize:
+            try:
+                op = self._operation(request)
+            except Exception:  # the mapping failed: no operation, which denies
+                op = None
+            result = self._guard(request.headers, body, operation=op)
+        else:
+            result = self._guard(request.headers, body)
         if not result.ok:
             return self._deny(result)
-        request.pca = PCAContext(verdict=result.verdict, pcactn=result.pcactn)
+        request.pca = PCAContext(verdict=result.verdict, pcactn=result.pcactn,
+                                 operation=result.authorization.operation if result.authorization else None)
         return self.get_response(request)

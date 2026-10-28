@@ -77,7 +77,7 @@ def test_allows_with_proof_on_deps_sync_and_async() -> None:
     agent: Agent[PCADeps, str] = Agent(_model(), deps_type=PCADeps)
 
     @agent.tool
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     async def transfer(ctx: RunContext[PCADeps], amount: int) -> str:
         RAN.append(amount)
         return "transferred %d" % amount
@@ -88,7 +88,7 @@ def test_allows_with_proof_on_deps_sync_and_async() -> None:
 
 
 def test_allows_with_inline_object_on_deps_and_tool_constructor() -> None:
-    guard = PCAGuard(audience=AUD, verifier=_verifier())
+    guard = PCAGuard(audience=AUD, verifier=_verifier(), signature_only=True)
 
     def transfer(ctx: RunContext[PCADeps], amount: int) -> str:
         RAN.append(amount)
@@ -108,7 +108,7 @@ def test_refusal_reaches_model_as_retry_with_reason(deps: PCADeps, why: str) -> 
     agent: Agent[PCADeps, str] = Agent(_model(), deps_type=PCADeps)
 
     @agent.tool
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(ctx: RunContext[PCADeps], amount: int) -> str:
         RAN.append(amount)
         return "x"
@@ -129,7 +129,7 @@ def test_tampered_wrong_audience_and_insufficient_capability_refused() -> None:
         agent: Agent[PCADeps, str] = Agent(_model(), deps_type=PCADeps)
 
         @agent.tool
-        @pca_tool(cap, audience=aud, verifier=_verifier())
+        @pca_tool(cap, audience=aud, verifier=_verifier(), signature_only=True)
         def transfer(ctx: RunContext[PCADeps], amount: int) -> str:
             RAN.append(amount)
             return "x"
@@ -144,7 +144,7 @@ def test_tool_plain_has_no_deps_so_it_is_refused() -> None:
     agent: Agent[None, str] = Agent(_model())
 
     @agent.tool_plain
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(amount: int) -> str:
         RAN.append(amount)
         return "x"
@@ -168,7 +168,7 @@ def test_proof_in_model_supplied_arguments_never_runs_the_tool() -> None:
     agent: Agent[None, str] = Agent(FunctionModel(fn))
 
     @agent.tool_plain
-    @pca_tool(CAP, audience=AUD, verifier=_verifier())
+    @pca_tool(CAP, audience=AUD, verifier=_verifier(), signature_only=True)
     def transfer(amount: int) -> str:
         RAN.append(amount)
         return "x"
@@ -176,3 +176,57 @@ def test_proof_in_model_supplied_arguments_never_runs_the_tool() -> None:
     assert agent.run_sync("go").output == "refused"
     assert RAN == []
     assert "extra_forbidden" in RETRIES[0]
+
+
+# ---- opt-in authorize (atlas-pca 0.5) against the real framework -------------------------------------------------------
+
+def _az_fixtures() -> Any:
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "testdata",
+                         "authorize-fixtures.json")
+    with open(path, encoding="utf-8") as fh:
+        fx = _json.load(fh)
+    proofs = {c["name"]: c["steps"][0]["pcactn"] for c in fx["cases"]}
+    grants = {c["grant"]["id"]: c["grant"] for c in fx["cases"]}
+    return fx["now"], fx["audience"], grants, proofs["envelope-max-spend-within"], proofs["envelope-max-spend-400-refused"]
+
+
+AZ_NOW, AZ_AUD, AZ_GRANTS, AZ_P50, AZ_P400 = _az_fixtures()
+AZ_SEND = "payments.send:payments/acme"
+
+
+def _az_opts() -> Any:
+    from atlas_pca import AuthorizeOptions, MemoryStateStore
+
+    return AuthorizeOptions(state_store=MemoryStateStore(), is_revoked=lambda p, g: False)
+
+
+def test_real_authorize_refuses_400_and_replay() -> None:
+    def model(amount: int) -> FunctionModel:
+        def fn(messages: List[ModelMessage], info: AgentInfo) -> ModelResponse:
+            for part in getattr(messages[-1], "parts", []):
+                kind = type(part).__name__
+                if kind == "RetryPromptPart":
+                    RETRIES.append(str(part.content))
+                    return ModelResponse(parts=[TextPart("refused")])
+                if kind == "ToolReturnPart":
+                    return ModelResponse(parts=[TextPart("done: %s" % part.content)])
+            return ModelResponse(parts=[ToolCallPart("send_payment", {"amount": amount, "currency": "usd"})])
+        return FunctionModel(fn)
+
+    guard = PCAGuard(audience=AZ_AUD, resolve_grant=AZ_GRANTS.get, authorize=_az_opts(), now=AZ_NOW)
+
+    def send_payment(ctx: RunContext[PCADeps], amount: int, currency: str) -> str:
+        RAN.append(amount)
+        return "sent %d" % amount
+
+    tool_ = Tool(guard.wrap(send_payment, AZ_SEND))
+    out = Agent(model(400), deps_type=PCADeps, tools=[tool_]).run_sync("go", deps=PCADeps(pca_action=AZ_P400))
+    assert out.output == "refused" and "max_spend" in RETRIES[-1]
+    out = Agent(model(50), deps_type=PCADeps, tools=[tool_]).run_sync("go", deps=PCADeps(pca_action=AZ_P50))
+    assert out.output == "done: sent 50"
+    out = Agent(model(50), deps_type=PCADeps, tools=[tool_]).run_sync("go", deps=PCADeps(pca_action=AZ_P50))
+    assert out.output == "refused" and "replay" in RETRIES[-1]
+    assert RAN == [50]

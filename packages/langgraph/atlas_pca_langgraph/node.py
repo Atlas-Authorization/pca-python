@@ -32,7 +32,7 @@ from ._proof import (
     resolve_proof,
 )
 from .tool import GuardedTool, PcaToolDenied, _parse_require, pca_tool
-from .verifier import CoreVerifier, GrantResolver, ToolDecision, Verifier
+from .verifier import AuthorizeVerifier, CoreVerifier, GrantResolver, ToolDecision, Verifier
 
 #: How each tool's required capability is chosen. See the module docstring.
 RequireSpec = Union[str, Mapping[str, str], Callable[[Any], Optional[str]]]
@@ -135,20 +135,33 @@ class PcaToolNode:
 
     ``audience``       — this node's RFC 8707 resource id; a proof minted for another audience is rejected.
     ``require``        — a :data:`RequireSpec` choosing each tool's capability (see the module docstring).
-    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required unless ``verifier`` is supplied.
-    ``verifier``       — a :class:`Verifier`; defaults to :class:`CoreVerifier` built from ``resolve_grant``.
-    ``now``            — epoch-ms validity clock (default: wall clock); used only for the default verifier.
+    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required.
+    ``verifier``       — a :class:`Verifier`; only with ``signature_only=True``.
+    ``now``            — epoch-ms validity clock (default: wall clock).
     ``messages_key``   — the state key the pending calls are read from and the results written to.
+    ``authorize``      — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (see
+                         :func:`pca_tool`); each call's arguments are bound, and caveats, revocation and the replay
+                         counter are enforced before its tool runs. Needs ``resolve_grant``. Without ``authorize``
+                         every call is refused (``authorize_config``).
+    ``signature_only`` — explicit opt-in to verifying the signature only (cannot be combined with ``authorize``).
     """
 
     def __init__(self, tools: List[Any], *, audience: str, require: RequireSpec,
                  resolve_grant: Optional[GrantResolver] = None, verifier: Optional[Verifier] = None,
                  now: Optional[int] = None, messages_key: str = DEFAULT_MESSAGES_KEY,
                  arg_name: str = PCA_ARG, state_key: str = PCA_STATE_KEY,
-                 config_key: str = PCA_CONFIG_KEY) -> None:
+                 config_key: str = PCA_CONFIG_KEY, authorize: Any = None, signature_only: bool = False) -> None:
         if not audience:
             raise ValueError("PcaToolNode requires a non-empty `audience`")
-        if verifier is None:
+        if signature_only and authorize is not None:
+            raise ValueError("PcaToolNode: signature_only and authorize are mutually exclusive")
+        if not signature_only:
+            if verifier is not None or resolve_grant is None:
+                raise ValueError("PcaToolNode runs the full authorize pipeline by default and needs `resolve_grant=` "
+                                 "(and no `verifier=`); pass `signature_only=True` to verify the signature only")
+            verifier = AuthorizeVerifier(resolve_grant, authorize if authorize is not None else {}, now=now)
+            resolve_grant = None
+        elif verifier is None:
             if resolve_grant is None:
                 raise ValueError("PcaToolNode requires either `verifier=` or `resolve_grant=`")
             verifier = CoreVerifier(resolve_grant, now=now)
@@ -171,7 +184,7 @@ class PcaToolNode:
                 raise ValueError("every tool must have a `name`; got %r" % (tool,))
             req = _require_for(tool, require)
             _parse_require(req)  # eager validation of a bad 'verb:resource' entry
-            guarded = pca_tool(req, audience=audience, verifier=verifier)(tool)
+            guarded = pca_tool(req, audience=audience, verifier=verifier, signature_only=True)(tool)  # verifier is already chosen above
             self.guarded_by_name[name] = guarded if isinstance(guarded, GuardedTool) else GuardedTool(
                 name=name, description=getattr(guarded, "description", "") or "",
                 guarded=getattr(guarded, "func"), required=req)
@@ -233,7 +246,8 @@ def guard_tool_node(tool_node: Any, *, audience: str, require: RequireSpec,
                     resolve_grant: Optional[GrantResolver] = None, verifier: Optional[Verifier] = None,
                     now: Optional[int] = None, messages_key: str = DEFAULT_MESSAGES_KEY,
                     arg_name: str = PCA_ARG, state_key: str = PCA_STATE_KEY,
-                    config_key: str = PCA_CONFIG_KEY) -> PcaToolNode:
+                    config_key: str = PCA_CONFIG_KEY, authorize: Any = None,
+                    signature_only: bool = False) -> PcaToolNode:
     """Gate every tool an existing ``ToolNode`` would execute, returning a :class:`PcaToolNode`.
 
     Pull the tools out of ``tool_node`` (its ``tools_by_name``) and rebuild the node with PCA gating on
@@ -242,10 +256,11 @@ def guard_tool_node(tool_node: Any, *, audience: str, require: RequireSpec,
         base = ToolNode([place_order, cancel_order])
         guarded = guard_tool_node(base, audience="rs-orders",
                                   require={"place_order": "write:db/orders"},
-                                  resolve_grant=resolve)
+                                  resolve_grant=resolve, authorize=options)
         graph.add_node("tools", guarded)
     """
     return PcaToolNode(_tools_of(tool_node), audience=audience, require=require,
                        resolve_grant=resolve_grant, verifier=verifier, now=now,
                        messages_key=messages_key, arg_name=arg_name, state_key=state_key,
-                       config_key=config_key)
+                       config_key=config_key, signature_only=signature_only,
+                       **({"authorize": authorize} if authorize is not None else {}))

@@ -39,7 +39,7 @@ def _header_value(pcactn):
 
 
 def _guard(audience=AUD, resolve_grant=_resolver):
-    return require_pca(audience=audience, resolve_grant=resolve_grant, now=NOW)
+    return require_pca(audience=audience, resolve_grant=resolve_grant, now=NOW, signature_only=True)
 
 
 # ---- framework-agnostic guard --------------------------------------------------------
@@ -102,7 +102,7 @@ def test_unknown_grant_is_401():
 
 def test_expired_is_403():
     # a now far past exp denies on validity (well-formed, so 403 not 401)
-    guard = require_pca(audience=AUD, resolve_grant=_resolver, now=NOW + 10 ** 12)
+    guard = require_pca(audience=AUD, resolve_grant=_resolver, now=NOW + 10 ** 12, signature_only=True)
     res = guard({"PCA-Action": _header_value(PCACTN)}, None)
     assert res.ok is False
     assert res.status == 403
@@ -119,7 +119,7 @@ def test_fastapi_dependency():
     from atlas_pca.fastapi import RequirePCA
 
     app = FastAPI()
-    guard = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW)
+    guard = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW, signature_only=True)
 
     @app.post("/protected")
     async def protected(request: Request, pca=Depends(guard)):
@@ -136,7 +136,7 @@ def test_fastapi_dependency():
     assert missing.status_code == 401
     assert missing.headers["WWW-Authenticate"].startswith('PCA realm="pca"')
 
-    bad_aud = RequirePCA(audience="rs-wrong", resolve_grant=_resolver, now=NOW)
+    bad_aud = RequirePCA(audience="rs-wrong", resolve_grant=_resolver, now=NOW, signature_only=True)
     app2 = FastAPI()
 
     @app2.post("/p2")
@@ -167,6 +167,8 @@ def test_django_middleware():
     import atlas_pca.django as dj
 
     settings.PCA_AUDIENCE = AUD
+
+    settings.PCA_SIGNATURE_ONLY = True
     settings.PCA_RESOLVE_GRANT = _resolver  # callable form
     settings.PCA_NOW = NOW
 

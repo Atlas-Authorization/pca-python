@@ -31,7 +31,7 @@ from ._proof import (
     current_proof,
     proof_from_tool_context,
 )
-from .verifier import CoreVerifier, GrantResolver, ToolDecision, Verifier
+from .verifier import AuthorizeVerifier, CoreVerifier, GrantResolver, ToolDecision, Verifier, verify_call
 
 #: A tool's work function, or a guarded wrapper over it. Tool I/O is arbitrary by nature.
 ToolFn = Callable[..., Any]
@@ -169,30 +169,49 @@ def _expose_tool_context(guarded: ToolFn) -> None:
 
 def pca_tool(require: str, *, audience: str, verifier: Optional[Verifier] = None,
              resolve_grant: Optional[GrantResolver] = None, now: Optional[int] = None,
-             arg_name: str = PCA_ARG, state_key: str = PCA_STATE_KEY) -> Callable[[Any], Any]:
+             arg_name: str = PCA_ARG, state_key: str = PCA_STATE_KEY,
+             authorize: Any = None,
+             signature_only: bool = False) -> Callable[[Any], Any]:
     """Decorator making an ADK tool require a valid proof-carrying action before it runs.
 
     ``require``        — the capability this tool demands, as ``"verb:resource"`` (e.g. ``"write:db/orders"``).
     ``audience``       — this resource server's own id; the proof's signed ``aud`` must equal it (RFC 8707).
-    ``verifier``       — a :class:`Verifier`; defaults to :class:`CoreVerifier` built from ``resolve_grant``.
-    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required when ``verifier`` is not supplied.
-    ``now``            — epoch-ms clock for the validity window (default: wall clock); used only for the default verifier.
+    ``verifier``       — a :class:`Verifier`; only with ``signature_only=True`` (it replaces the authorize pipeline).
+    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required.
+    ``now``            — epoch-ms clock for the validity window (default: wall clock).
     ``arg_name``       — the tool-call argument that carries the proof inline (default ``"pca_action"``).
     ``state_key``      — the ``tool_context`` session-state key the proof travels under (default ``"PCA-Action"``).
+    ``authorize``      — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its fields:
+                         ``state_store``, ``is_revoked``, ...). The proof must then be for exactly this call (the
+                         tool's capability with the call arguments as params), and the grant's predicates and
+                         caveats, revocation and the replay counter are enforced before the tool runs. Needs
+                         ``resolve_grant`` (not ``verifier``). Put it on ONE gate per tool (the callback or
+                         ``pca_tool``): each consumes the replay counter.
+    ``signature_only`` — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                         only (no policy, replay or revocation). Cannot be combined with ``authorize``. Without
+                         ``authorize`` every call is refused (``authorize_config``).
 
     Usage::
 
         from google.adk.tools import FunctionTool
         from atlas_pca_google_adk import pca_tool
 
-        @pca_tool("write:db/orders", audience="rs-orders", resolve_grant=resolve)
+        @pca_tool("write:db/orders", audience="rs-orders", resolve_grant=resolve, authorize=options)
         def place_order(sku: str, qty: int, tool_context) -> str:
             ...
 
         agent = LlmAgent(..., tools=[place_order])  # `place_order` is now a guarded FunctionTool
     """
     verb, resource = _parse_require(require)
-    if verifier is None:
+    if signature_only and authorize is not None:
+        raise ValueError("pca_tool: signature_only and authorize are mutually exclusive")
+    if not signature_only:
+        if verifier is not None or resolve_grant is None:
+            raise ValueError("pca_tool runs the full authorize pipeline by default and needs `resolve_grant=` (and no "
+                             "`verifier=`); pass `signature_only=True` to verify the signature only")
+        verifier = AuthorizeVerifier(resolve_grant, authorize if authorize is not None else {}, now=now)
+        resolve_grant = None
+    elif verifier is None:
         if resolve_grant is None:
             raise ValueError("pca_tool requires either `verifier=` or `resolve_grant=`")
         verifier = CoreVerifier(resolve_grant, now=now)
@@ -206,7 +225,8 @@ def pca_tool(require: str, *, audience: str, verifier: Optional[Verifier] = None
             inline = kwargs.pop(arg_name, None)
             ctx = None if tool_context is _UNSET else tool_context
             pcactn = _resolve_proof(inline, ctx)
-            decision = the_verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
+            decision = verify_call(the_verifier, pcactn, verb=verb, resource=resource, audience=audience,
+                                   params=None if args else kwargs)
             if not decision.ok:
                 raise PcaToolDenied(decision)
             if meta.forward_tool_context and ctx is not None:

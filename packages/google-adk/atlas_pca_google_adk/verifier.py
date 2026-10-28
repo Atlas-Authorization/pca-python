@@ -1,7 +1,7 @@
 """Turn a carried proof + a tool's required capability into an allow/deny decision.
 
 This sits ON TOP of ``atlas_pca.verify_pcactn_core`` (the eight offline CORE checks: wire, version,
-audience, validity, chain, plan_inclusion, leaf_signature, counter). No crypto lives here. It adds the
+audience, validity, chain, plan_inclusion, leaf_signature, counter_format). No crypto lives here. It adds the
 two things an ADK tool guard needs beyond the core checks:
 
 * **resource-server correctness** — the proof's signed ``aud`` must equal this guard's ``audience``
@@ -48,6 +48,8 @@ class ToolDecision:
     verdict: Optional[Verdict] = None
     pcactn: Optional[Dict[str, Any]] = None
     required: Optional[str] = None
+    #: the full ``atlas_pca.AuthorizeResult`` when an :class:`AuthorizeVerifier` decided (checks, bound operation)
+    authorization: Any = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -113,3 +115,45 @@ class CoreVerifier:
                 )
 
         return ToolDecision(ok=True, verdict=verdict, pcactn=pcactn, required=required)
+
+
+class AuthorizeVerifier:
+    """Opt-in full pipeline (0.5): each tool call goes through ``atlas_pca.authorize``.
+
+    The operation is the capability the tool requires (``verb``/``resource``) with the tool-call arguments as its
+    params, so the proof must be for exactly this call. On top of the core checks it enforces the grant's envelope
+    predicates, root and delegated caveats (``max_spend``, ``predicates``, ``tool_schema``, ...), revocation
+    (``options.is_revoked``) and the replay counter (``options.state_store``, consumed only when everything else
+    passes). A missing component, a tool without a capability or arguments that cannot be bound deny. ``options`` is an
+    ``atlas_pca.AuthorizeOptions`` or a dict of its fields.
+    """
+
+    #: the guard passes the tool-call arguments as ``params=`` to a verifier that sets this
+    binds_params = True
+
+    def __init__(self, resolve_grant: GrantResolver, options: Any, *, now: Optional[int] = None) -> None:
+        from atlas_pca.authorize import AuthorizeOptions  # atlas-pca 0.5+
+
+        self._options = AuthorizeOptions(**dict(options)) if isinstance(options, dict) else options
+        self._resolve_grant = resolve_grant
+        self._now = now
+
+    def verify(self, pcactn: Optional[Dict[str, Any]], *, verb: Optional[str], resource: Optional[str],
+               audience: str, params: Optional[Dict[str, Any]] = None) -> ToolDecision:
+        from atlas_pca.authorize import authorize_tool_call
+
+        required = _capability(verb, resource)
+        if pcactn is None:
+            return ToolDecision(ok=False, reason="no proof-carrying action presented", required=required)
+        r = authorize_tool_call(self._options, pcactn, verb=verb, resource=resource, params=params,
+                                audience=audience, resolve_grant=self._resolve_grant, now=self._now)
+        return ToolDecision(ok=r.allow, reason=None if r.allow else r.reason, verdict=r.verdict, pcactn=pcactn,
+                            required=required, authorization=r)
+
+
+def verify_call(verifier: Any, pcactn: Optional[Dict[str, Any]], *, verb: Optional[str], resource: Optional[str],
+                audience: str, params: Optional[Dict[str, Any]]) -> ToolDecision:
+    """Call ``verifier.verify``, handing it the tool-call arguments only when it binds them (``binds_params``)."""
+    if getattr(verifier, "binds_params", False):
+        return verifier.verify(pcactn, verb=verb, resource=resource, audience=audience, params=params)
+    return verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
