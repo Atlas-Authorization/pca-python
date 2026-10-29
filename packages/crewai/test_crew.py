@@ -58,7 +58,7 @@ def _kw():
 def test_guard_tools_wraps_mapped_and_passes_through_unmapped():
     mapped = _Tool("reader")
     unmapped = _Tool("mystery")
-    out = guard_tools([mapped, unmapped], require={"reader": REQUIRE}, **_kw())
+    out = guard_tools([mapped, unmapped], require={"reader": REQUIRE}, **_kw(), signature_only=True)
     assert isinstance(out[0], GuardedTool)       # mapped -> guarded
     assert out[1] is unmapped                    # unmapped -> untouched
     # the guarded one is gated
@@ -71,7 +71,7 @@ def test_guard_tools_wraps_mapped_and_passes_through_unmapped():
 def test_guard_tools_callable_require():
     a, b = _Tool("a"), _Tool("b")
     spec = lambda tool: REQUIRE if tool.name == "a" else None
-    out = guard_tools([a, b], require=spec, **_kw())
+    out = guard_tools([a, b], require=spec, **_kw(), signature_only=True)
     assert isinstance(out[0], GuardedTool)
     assert out[1] is b
 
@@ -84,7 +84,7 @@ def test_guard_crew_wraps_every_reachable_tool():
     crew_tool = _Tool("writer")
     crew = _Crew(agents=[_Agent(agent_tools)], tasks=[_Task([task_tool])], tools=[crew_tool])
 
-    returned = guard_crew(crew, require=REQUIRE_MAP, **_kw())
+    returned = guard_crew(crew, require=REQUIRE_MAP, signature_only=True, **_kw())
     assert returned is crew
 
     guarded_everywhere = crew.agents[0].tools + crew.tasks[0].tools + crew.tools
@@ -103,7 +103,7 @@ def test_guard_crew_wraps_every_reachable_tool():
 
 def test_guard_crew_single_string_require_applies_to_all():
     crew = _Crew(agents=[_Agent([_Tool("x"), _Tool("y")])])
-    guard_crew(crew, require=REQUIRE, **_kw())
+    guard_crew(crew, require=REQUIRE, signature_only=True, **_kw())
     tools = crew.agents[0].tools
     assert all(isinstance(t, GuardedTool) for t in tools)
     with pca_context(PCACTN):
@@ -117,6 +117,7 @@ def test_pca_tool_guard_mixin_guards_the_crew():
         pca_audience = AUD
         pca_require = REQUIRE
         pca_resolve_grant = staticmethod(resolver)
+        pca_signature_only = True
         pca_now = NOW
 
     crew = MyCrew(agents=[_Agent([_Tool("reader")])])
@@ -136,6 +137,7 @@ def test_pca_tool_guard_requires_audience():
     class BadCrew(PcaToolGuard, _Crew):
         pca_require = REQUIRE
         pca_resolve_grant = staticmethod(resolver)
+        pca_signature_only = True
 
     crew = BadCrew(agents=[_Agent([_Tool("reader")])])
     with pytest.raises(ValueError):

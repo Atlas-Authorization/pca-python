@@ -25,6 +25,7 @@ from .pca import (
     grant_session_caveat, hash_canonical, intent_session_caveat_error, params_digest, sha256, suite_available,
     verify_leaf_suite, REGISTERED_SUITES,
 )
+from .decision import decide_tighten, decide_units, model_paths_read
 from .intent_layers import decide_layer_ceilings
 from .intent_map import MAP_FORM_COMMIT, decide_map_disclosure
 from .intent_wb import decide_intent_wb, validate_wb_context
@@ -258,6 +259,14 @@ ACTION_SCHEMA_KIND = "pca-action-schema"
 SENSITIVITIES = ("free", "material", "critical")
 SCHEMA_REVERSIBILITY = ("reversible", "rate_limited", "irreversible")
 PARAM_TYPES = ("string", "integer", "boolean", "date", "set", "array")
+PARAM_TYPES_V2 = PARAM_TYPES + ("datetime", "duration", "object_ref")
+SCHEMA_V2_EFFECTS = ("read", "create", "update", "delete", "send", "pay", "exec", "privilege", "export", "publish", "provision", "sign")
+SCHEMA_V2_CAVEATS = ("amount_cap", "count_cap", "window", "resource_scope", "recipient_scope", "approval_ref", "short_expiry", "rate_cap")
+SCHEMA_V2_PRULES = ("array_bounded", "export_bounded", "id_not_wildcard", "money_amount_bounded", "money_has_currency",
+                    "pay_has_idempotency", "recipient_param_declared", "secret_not_logged")
+SCHEMA_V2_CONTEXT = ("approval_ref", "dry_run_first", "fresh_revocation", "idempotency", "revocable", "sandbox_attested")
+SCHEMA_V2_TAGS = ("pii", "phi", "pci", "secret", "credential", "free_text_outbound", "code", "path", "sql")
+SCHEMA_V2_PROVENANCE = ("first_party", "tool", "agent")
 MAX_SCHEMA_VERBS = 256
 MAX_SCHEMA_PARAMS = 64
 MAX_SCHEMA_VALUES = 256
@@ -265,15 +274,21 @@ DEFAULT_MAX_LEN = 1024
 DEFAULT_MAX_ITEMS = 64
 PARAM_PATH_RE = re.compile(r"action\.params\.[A-Za-z0-9_]{1,64}")  # always used with fullmatch
 UNIT_ID_RE = re.compile(r"[a-z0-9_]+(?:\.[a-z0-9_]+)*")  # always used with fullmatch
+PARAM_PATH_RE_V2 = re.compile(r"action\.params\.[A-Za-z0-9_]{1,64}(?:\.[A-Za-z0-9_]{1,64}){0,2}")
 _PARAMS_PREFIX = "action.params."
+_TRAIT_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}")
+_TAINT_CTX_RE = re.compile(r"session_taint_max:[a-z_]{1,16}")
 
 _DOC_KEYS = frozenset(("v", "kind", "site", "aud", "version", "units", "state", "verbs", "sig"))
+_DOC_KEYS_V2 = _DOC_KEYS | frozenset(("traits_digest", "trait_defs", "pack"))
 _VERB_KEYS = frozenset(("verb", "kind", "params", "reversibility", "reversibility_by", "mcp", "openapi", "harm", "world",
                         "effects", "returns", "description"))
+_VERB_KEYS_V2 = _VERB_KEYS | frozenset(("traits", "def", "floors", "confirmation"))
 _PARAM_KEYS = frozenset((
     "type", "semantic", "sensitivity", "required", "values", "min", "max", "unit", "max_len", "items", "min_items",
     "max_items", "default", "principal_neutral_default", "accumulates_into", "issued_by_site", "description",
 ))
+_PARAM_KEYS_V2 = _PARAM_KEYS | frozenset(("role", "format", "tags", "provenance_min"))
 _SIG_KEYS = frozenset(("alg", "kid", "value", "pq_value"))
 
 
@@ -281,18 +296,18 @@ def _is_str(v: Any, mx: int = 256) -> bool:
     return isinstance(v, str) and len(v) > 0 and not _has_surrogate(v) and _blen(v) <= mx
 
 
-def _param_decl_error(path: str, d: Any, units: Any) -> Optional[str]:
-    if PARAM_PATH_RE.fullmatch(path) is None:
+def _param_decl_error(path: str, d: Any, units: Any, v2: bool = False) -> Optional[str]:
+    if (PARAM_PATH_RE_V2 if v2 else PARAM_PATH_RE).fullmatch(path) is None:
         return "parameter path '%s' is not action.params.<name>" % path
-    if path[len(_PARAMS_PREFIX):] in RESERVED_NAMES:
+    if any(seg in RESERVED_NAMES for seg in path[len(_PARAMS_PREFIX):].split(".")):
         return "parameter name '%s' is reserved (__proto__ / constructor / prototype)" % path
     if not isinstance(d, dict):
         return "%s: declaration must be an object" % path
     for k in _js_keys(d):
-        if k not in _PARAM_KEYS:
+        if k not in (_PARAM_KEYS_V2 if v2 else _PARAM_KEYS):
             return "%s: unknown member '%s'" % (path, k)
     t = d.get("type", _UNDEF)
-    if not _in_strs(t, PARAM_TYPES):
+    if not _in_strs(t, PARAM_TYPES_V2 if v2 else PARAM_TYPES):
         return "%s: unknown type" % path
     if not _is_str(d.get("semantic"), 128):
         return "%s: semantic must be a non-empty string" % path
@@ -311,7 +326,7 @@ def _param_decl_error(path: str, d: Any, units: Any) -> Optional[str]:
     if t == "set" and "values" not in d:
         return "%s: a set needs values" % path
     for k in ("min", "max"):
-        if k in d and (not _is_safe_int(d[k]) or (t != "integer" and not (t == "array" and _js_strict_eq(d.get("items", _UNDEF), "integer")))):
+        if k in d and (not _is_safe_int(d[k]) or (t != "integer" and not (v2 and t == "duration") and not (t == "array" and _js_strict_eq(d.get("items", _UNDEF), "integer")))):
             return "%s: %s must be a safe integer on an integer parameter" % (path, k)
     if _is_safe_int(d.get("min")) and _is_safe_int(d.get("max")) and d["min"] > d["max"]:
         return "%s: min > max" % path
@@ -347,14 +362,83 @@ def _param_decl_error(path: str, d: Any, units: Any) -> Optional[str]:
         return "%s: issued_by_site must be a boolean" % path
     if "description" in d and not _is_str(d["description"], 1024):
         return "%s: description must be a string" % path
+    if v2:
+        if "role" in d and not _is_str(d["role"], 128):
+            return "%s: role must be a non-empty string" % path
+        if "format" in d and (not isinstance(d["format"], str) or format_check(d["format"]) is None or t not in ("string", "object_ref")):
+            return "%s: format must be a known format on a string parameter" % path
+        if "tags" in d:
+            tg = d["tags"]
+            if not isinstance(tg, list) or len(tg) > len(SCHEMA_V2_TAGS) or len(set(map(str, tg))) != len(tg) or not all(_in_strs(x, SCHEMA_V2_TAGS) for x in tg):
+                return "%s: tags must be distinct known tags" % path
+        if "provenance_min" in d and not _in_strs(d["provenance_min"], SCHEMA_V2_PROVENANCE):
+            return "%s: unknown provenance_min" % path
     return None
 
 
-def _verb_decl_error(v: Any, units: Any) -> Optional[str]:
+def schema_floors_error(f: Any) -> Optional[str]:
+    """Null if `f` is a well-formed materialized profile (shape only; the semantic check is rule 22)."""
+    if not isinstance(f, dict):
+        return "floors must be an object"
+    for k in _js_keys(f):
+        if k not in ("risk", "rev", "blast_ppm", "esc", "caveats", "context", "prules"):
+            return "floors: unknown member '%s'" % k
+    def rng(x, lo, hi):
+        return _is_safe_int(x) and lo <= x <= hi
+    if not rng(f.get("risk"), 0, 3) or not rng(f.get("esc"), 0, 3):
+        return "floors.risk and floors.esc must be integers in 0..3"
+    if not _in_strs(f.get("rev"), SCHEMA_REVERSIBILITY):
+        return "floors.rev is not a reversibility class"
+    if not rng(f.get("blast_ppm"), 0, 1000000):
+        return "floors.blast_ppm must be an integer in 0..1000000"
+    for name, ok in (("caveats", lambda x: x in SCHEMA_V2_CAVEATS),
+                     ("context", lambda x: x in SCHEMA_V2_CONTEXT or _TAINT_CTX_RE.fullmatch(x) is not None),
+                     ("prules", lambda x: x in SCHEMA_V2_PRULES)):
+        a = f.get(name)
+        if not isinstance(a, list) or len(a) > 64 or not all(isinstance(x, str) and ok(x) for x in a):
+            return "floors.%s must be an array of known entries" % name
+        for i in range(1, len(a)):
+            if not (a[i - 1] < a[i]):
+                return "floors.%s must be sorted and distinct" % name
+    return None
+
+
+def confirmation_shape_error(c: Any) -> Optional[str]:
+    """None if `c` is a well-formed verb `confirmation` (shape only; the signature check is rule 22)."""
+    if not isinstance(c, dict):
+        return "confirmation must be an object"
+    for k in _js_keys(c):
+        if k not in ("def_digest", "traits_digest", "facts_digest", "final_traits", "dismissed", "reviewer_kid", "ts", "sig"):
+            return "confirmation: unknown member '%s'" % k
+    if decode_b64u_strict(c.get("def_digest"), 32) is None or decode_b64u_strict(c.get("traits_digest"), 32) is None or decode_b64u_strict(c.get("facts_digest"), 32) is None:
+        return "confirmation: def_digest, traits_digest and facts_digest must be canonical base64url SHA-256 digests"
+    if decode_b64u_strict(c.get("sig"), 64) is None:
+        return "confirmation: sig must be a canonical base64url 64-byte signature"
+    ft = c.get("final_traits")
+    if not isinstance(ft, list) or len(ft) > 64 or not all(isinstance(x, str) and _TRAIT_ID_RE.fullmatch(x) for x in ft):
+        return "confirmation: final_traits must be trait ids"
+    if any(not (ft[i - 1] < ft[i]) for i in range(1, len(ft))):
+        return "confirmation: final_traits must be sorted and distinct"
+    dm = c.get("dismissed")
+    if not isinstance(dm, list) or len(dm) > 64:
+        return "confirmation: dismissed must be an array"
+    for d in dm:
+        if not isinstance(d, dict) or any(k not in ("trait", "reason") for k in d) or not isinstance(d.get("trait"), str) \
+                or not _TRAIT_ID_RE.fullmatch(d["trait"]) or not _is_str(d.get("reason"), 256):
+            return "confirmation: dismissed entries must be {trait, reason}"
+    if not _is_str(c.get("reviewer_kid"), 128):
+        return "confirmation: reviewer_kid must be a non-empty string"
+    ts = c.get("ts")
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not _is_safe_int(ts) or ts < 0:
+        return "confirmation: ts must be a non-negative safe integer"
+    return None
+
+
+def _verb_decl_error(v: Any, units: Any, v2: bool = False) -> Optional[str]:
     if not isinstance(v, dict):
         return "verb entry must be an object"
     for k in _js_keys(v):
-        if k not in _VERB_KEYS:
+        if k not in (_VERB_KEYS_V2 if v2 else _VERB_KEYS):
             return "verb entry: unknown member '%s'" % k
     if not _is_str(v.get("verb"), 128):
         return "verb entry: verb must be a non-empty string"
@@ -368,9 +452,14 @@ def _verb_decl_error(v: Any, units: Any) -> Optional[str]:
     if len(names) > MAX_SCHEMA_PARAMS:
         return "%s: more than %d parameters" % (at, MAX_SCHEMA_PARAMS)
     for p in names:
-        e = _param_decl_error(p, params[p], units)
+        e = _param_decl_error(p, params[p], units, v2)
         if e:
             return "%s: %s" % (at, e)
+    if v2:
+        for p in names:
+            for q in names:
+                if q != p and q.startswith(p + "."):
+                    return "%s: parameter '%s' is both a value and the parent of '%s'" % (at, p, q)
     if "reversibility" in v and not _in_strs(v["reversibility"], SCHEMA_REVERSIBILITY):
         return "%s: unknown reversibility" % at
     if "reversibility_by" in v:
@@ -392,9 +481,33 @@ def _verb_decl_error(v: Any, units: Any) -> Optional[str]:
         o = v["openapi"]
         if not isinstance(o, dict) or ",".join(_js_keys(o)) != "operationId" or not _is_str(o.get("operationId"), 128):
             return "%s: openapi must be {operationId}" % at
-    for k in ("harm", "effects", "returns"):
+    for k in (("harm", "returns") if v2 else ("harm", "effects", "returns")):
         if k in v and not isinstance(v[k], dict):
             return "%s: %s must be an object" % (at, k)
+    if v2:
+        ef = v.get("effects")
+        if not isinstance(ef, list) or len(ef) == 0 or len(ef) > len(SCHEMA_V2_EFFECTS) or not all(_in_strs(x, SCHEMA_V2_EFFECTS) for x in ef):
+            return "%s: effects must be 1..%d known effects" % (at, len(SCHEMA_V2_EFFECTS))
+        for i in range(1, len(ef)):
+            if not (ef[i - 1] < ef[i]):
+                return "%s: effects must be sorted and distinct" % at
+        if (v.get("kind") == "read") != all(x == "read" for x in ef):
+            return "%s: kind read must hold exactly when every effect is read" % at
+        tr = v.get("traits")
+        if not isinstance(tr, list) or len(tr) > 64 or not all(isinstance(x, str) and _TRAIT_ID_RE.fullmatch(x) for x in tr):
+            return "%s: traits must be trait ids" % at
+        for i in range(1, len(tr)):
+            if not (tr[i - 1] < tr[i]):
+                return "%s: traits must be sorted and distinct" % at
+        if decode_b64u_strict(v.get("def"), 32) is None:
+            return "%s: def must be a canonical base64url SHA-256 digest" % at
+        fe = schema_floors_error(v.get("floors"))
+        if fe:
+            return "%s: %s" % (at, fe)
+        if "confirmation" in v:
+            ce = confirmation_shape_error(v["confirmation"])
+            if ce:
+                return "%s: %s" % (at, ce)
     if "world" in v and not isinstance(v["world"], list):
         return "%s: world must be an array" % at
     if "description" in v and not _is_str(v["description"], 1024):
@@ -407,10 +520,11 @@ def action_schema_shape_error(doc: Any, signed: bool = True) -> Optional[str]:
     try:
         if not isinstance(doc, dict):
             return "schema is not an object"
+        v2 = _js_strict_eq(doc.get("v", _UNDEF), 2)
         for k in _js_keys(doc):
-            if k not in _DOC_KEYS:
+            if k not in (_DOC_KEYS_V2 if v2 else _DOC_KEYS):
                 return "unknown member '%s'" % k
-        if not _js_strict_eq(doc.get("v", _UNDEF), 1):
+        if not _js_strict_eq(doc.get("v", _UNDEF), 1) and not v2:
             return "unsupported schema version"
         if not _js_strict_eq(doc.get("kind", _UNDEF), ACTION_SCHEMA_KIND):
             return "kind must be '%s'" % ACTION_SCHEMA_KIND
@@ -434,12 +548,23 @@ def action_schema_shape_error(doc: Any, signed: bool = True) -> Optional[str]:
                     return "unit '%s': exponent must be an integer in [0, 18]" % uid
         if "state" in doc and not isinstance(doc["state"], list):
             return "state must be an array"
+        if v2:
+            if "traits_digest" in doc and decode_b64u_strict(doc["traits_digest"], 32) is None:
+                return "traits_digest must be a canonical base64url SHA-256 digest"
+            if "trait_defs" in doc and (not isinstance(doc["trait_defs"], list) or len(doc["trait_defs"]) > 64
+                                        or not all(isinstance(x, dict) for x in doc["trait_defs"])):
+                return "trait_defs must be an array of up to 64 objects"
+            if "pack" in doc:
+                pk = doc["pack"]
+                if (not isinstance(pk, dict) or _sorted_join(pk) != "ns,root,version" or not _is_str(pk.get("ns"), 64)
+                        or not _is_str(pk.get("version"), 128) or decode_b64u_strict(pk.get("root"), 32) is None):
+                    return "pack must be {ns, version, root}"
         verbs = doc.get("verbs")
         if not isinstance(verbs, list) or len(verbs) == 0 or len(verbs) > MAX_SCHEMA_VERBS:
             return "verbs must be 1..%d entries" % MAX_SCHEMA_VERBS
         seen = set()
         for v in verbs:
-            e = _verb_decl_error(v, units)
+            e = _verb_decl_error(v, units, v2)
             if e:
                 return e
             if v["verb"] in seen:
@@ -556,6 +681,74 @@ def _dflt(d: dict, k: str, default: Any) -> Any:
     return default if v is _UNDEF else v
 
 
+# ---- v2 string formats (syntactic checks, identical in every language) ------------------------------------------------
+_JS_WS = "\\t\\n\\v\\f\\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"  # ECMAScript \s
+_NS = "[^%s]" % _JS_WS
+_FORMAT_RES = {
+    "email": re.compile(r"[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]{1,63}(?:\.[A-Za-z0-9\-]{1,63})+"),
+    "url": re.compile(r"[A-Za-z][A-Za-z0-9+.\-]{0,31}://[^%s/?#]+%s*" % (_JS_WS, _NS)),
+    "uri_https": re.compile(r"https://[^%s/?#]+%s*" % (_JS_WS, _NS)),
+    "uuid": re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+    "phone_e164": re.compile(r"\+[1-9][0-9]{6,14}"),
+    "iso_country": re.compile(r"[A-Z]{2}"),
+    "iso_currency": re.compile(r"[A-Z]{3}"),
+    "semver": re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z\-]+(?:\.[0-9A-Za-z\-]+)*)?(?:\+[0-9A-Za-z\-]+(?:\.[0-9A-Za-z\-]+)*)?"),
+    "sha256": re.compile(r"[0-9a-f]{64}"),
+}
+_IBAN_RE = re.compile(r"[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}")
+_CIDR4_RE = re.compile(r"([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})")
+_CIDR6_RE = re.compile(r"([0-9a-fA-F:]{2,39})/([0-9]{1,3})")
+_ID_FORMAT_RE = re.compile(r"id:[a-z0-9_]+(?:\.[a-z0-9_]+){0,3}")
+_ID_VALUE_RE = re.compile(r"[A-Za-z0-9._:\-]{1,128}")
+_DATETIME_RE = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})T([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])(?:\.[0-9]{1,3})?Z")
+
+
+def _canon_dec(n: str) -> bool:
+    return str(int(n)) == n
+
+
+def _iban_ok(s: str) -> bool:
+    if _IBAN_RE.fullmatch(s) is None:
+        return False
+    rem = 0
+    for ch in s[4:] + s[:4]:
+        v = ord(ch) - 55 if ch >= "A" else ord(ch) - 48
+        rem = (rem * 100 + v if v > 9 else rem * 10 + v) % 97
+    return rem == 1
+
+
+def _cidr_ok(s: str) -> bool:
+    m = _CIDR4_RE.fullmatch(s)
+    if m:
+        return all(int(o) <= 255 and _canon_dec(o) for o in m.groups()[:4]) and int(m.group(5)) <= 32 and _canon_dec(m.group(5))
+    m = _CIDR6_RE.fullmatch(s)
+    return bool(m) and m.group(1).count(":") >= 2 and ":::" not in m.group(1) and int(m.group(2)) <= 128 and _canon_dec(m.group(2))
+
+
+def format_check(f: str):
+    """The checker of a v2 `format`, or None when the format is unknown. `id:<type>` accepts a 1..128 character safe id."""
+    if f == "email":
+        return lambda s: len(s) <= 254 and _FORMAT_RES["email"].fullmatch(s) is not None
+    if f == "iban":
+        return _iban_ok
+    if f == "cidr":
+        return _cidr_ok
+    if f in _FORMAT_RES:
+        return lambda s, r=_FORMAT_RES[f]: r.fullmatch(s) is not None
+    if _ID_FORMAT_RE.fullmatch(f):
+        return lambda s: _ID_VALUE_RE.fullmatch(s) is not None
+    return None
+
+
+def _format_violation(d: dict, x: str) -> Optional[dict]:
+    if "format" not in d:
+        return None
+    ck = format_check(d["format"])
+    if ck is None or not ck(x):
+        return {"code": "out_of_domain", "reason": "not a valid %s" % _js_str(d["format"])}
+    return None
+
+
 def param_value_violation(d: dict, x: Any) -> Optional[dict]:
     """Value check of one declared parameter: None = in the declared domain, else {"code", "reason"} with code
     `bad_type` or `out_of_domain`. A declaration that is not an object is a TypeError (fail closed)."""
@@ -570,6 +763,29 @@ def param_value_violation(d: dict, x: Any) -> Optional[dict]:
             return {"code": "out_of_domain", "reason": "longer than %s UTF-8 bytes" % _js_str(max_len)}
         if "values" in d and not _includes(d["values"], x):
             return {"code": "out_of_domain", "reason": "not one of the declared values"}
+        return _format_violation(d, x)
+    if t == "object_ref":
+        if not isinstance(x, str) or _has_surrogate(x) or len(x) == 0:
+            return {"code": "bad_type", "reason": "expected a non-empty id string"}
+        if _blen(x) > max_len:
+            return {"code": "out_of_domain", "reason": "longer than %s UTF-8 bytes" % _js_str(max_len)}
+        return _format_violation(d, x)
+    if t == "datetime":
+        if not isinstance(x, str):
+            return {"code": "bad_type", "reason": "expected an RFC 3339 UTC string"}
+        m = _DATETIME_RE.fullmatch(x)
+        if m and _is_calendar_date(m.group(1)):
+            return None
+        return {"code": "out_of_domain", "reason": "not an RFC 3339 UTC datetime YYYY-MM-DDTHH:MM:SS[.fff]Z"}
+    if t == "duration":
+        if not _is_safe_int(x):
+            return {"code": "bad_type", "reason": "expected a safe integer (milliseconds)"}
+        if x < 0:
+            return {"code": "out_of_domain", "reason": "a duration is not negative"}
+        if "min" in d and x < d["min"]:
+            return {"code": "out_of_domain", "reason": "below min %s" % _js_str(d["min"])}
+        if "max" in d and x > d["max"]:
+            return {"code": "out_of_domain", "reason": "above max %s" % _js_str(d["max"])}
         return None
     if t == "integer":
         if not _is_safe_int(x):
@@ -793,8 +1009,8 @@ def accumulator_decl_error(a: Any) -> Optional[str]:
             return "%s: holder sequenced needs a uri" % at
         if decode_b64u_strict(h.get("root"), 32) is None:
             return "%s: holder.root is not canonical base64url (32 bytes)" % at
-        if suite_capability_error(h.get("root_alg", _UNDEF)):
-            return _ctx("%s: holder.root_alg: " % at, suite_capability_error(h["root_alg"]))
+        if _suite_known_error(h.get("root_alg", _UNDEF)):
+            return _ctx("%s: holder.root_alg: " % at, _suite_known_error(h["root_alg"]))
         if "root_pq_pk" in h and decode_b64u_strict(h["root_pq_pk"]) is None:
             return "%s: holder.root_pq_pk is not canonical base64url" % at
         if "keys_uri" in h and (not isinstance(h["keys_uri"], str) or len(h["keys_uri"]) == 0):
@@ -1247,9 +1463,26 @@ def _epoch_message(ep: dict) -> bytes:
         _bind_suite_fields(body, ep.get("alg", _UNDEF), ep.get("pq_pk", _UNDEF)))
 
 
+def check_revocation_age(issued_at: Any, now: Any, max_age_ms: Any, what: str = "revocation state") -> dict:
+    """revocation.ts `checkRevocationAge`: revocation state issued at `issued_at` (epoch ms) is acceptable at `now` when it
+    is at most `max_age_ms` old. An unknown issue time is unverifiable and denies; a time more than 60 s in the future
+    denies (the signed epoch's skew). Returns {"ok": True} or {"ok": False, "reason"}. Total."""
+    try:
+        if not _is_num(issued_at) or not math.isfinite(issued_at):
+            return _bad("%s age is unknown (unverifiable revocation state)" % what)
+        if not issued_at <= now + 60_000:
+            return _bad("%s issued in the future" % what)
+        if not now - issued_at <= max_age_ms:
+            return _bad("%s is %s ms old, over the verifier's maximum of %s ms (stale revocation state)"
+                        % (what, _js_str(now - issued_at), _js_str(max_age_ms)))
+        return {"ok": True}
+    except Exception:  # noqa: BLE001
+        return _bad("%s age is unknown (unverifiable revocation state)" % what)
+
+
 def check_revocation_epoch(ep: Any, guardian_public: Any, now: Any, grant_ref: Any = _UNDEF,
                            last_accepted_epoch: Any = _UNDEF, pcactn_epoch: Any = _UNDEF,
-                           pq_pins: Optional[dict] = None) -> dict:
+                           pq_pins: Optional[dict] = None, max_age_ms: Any = _UNDEF) -> dict:
     """Verify a signed revocation epoch (revocation.ts checkRevocationEpoch; the `pq_artifact` "revocation" format: the
     guardian signs `"atlas-pca/revepoch/v1\\0" || strictCanonical({instance_id, grant_ref, epoch, set_size, root,
     issued_at, not_after} + bound suite fields)`): signer and suite, `epoch` / `set_size`, the signature through the suite
@@ -1274,6 +1507,10 @@ def check_revocation_epoch(ep: Any, guardian_public: Any, now: Any, grant_ref: A
             return _bad("revocation epoch expired (stale revocation root)")
         if not ep["issued_at"] <= now + 60_000:
             return _bad("revocation epoch issued in the future")
+        if max_age_ms is not _UNDEF:  # verifier-side cap on now - issued_at (T9)
+            age = check_revocation_age(ep["issued_at"], now, max_age_ms, "revocation epoch")
+            if not age["ok"]:
+                return age
         if last_accepted_epoch is not _UNDEF and e < last_accepted_epoch:
             return _bad("revocation epoch %s is older than the last accepted %s (rollback)" % (_js_str(e), _js_str(last_accepted_epoch)))
         if pcactn_epoch is not _UNDEF and not pcactn_epoch >= e:
@@ -1698,8 +1935,10 @@ def intent_v2_context_error(ctx: Any) -> Optional[str]:
         # closed member sets; every flag a JSON boolean, every number a safe integer when present (absent = default)
         pol = ctx["policy"]
         for k in _js_keys(pol):
-            if k not in ("session", "schema", "acc", "map"):
+            if k not in ("session", "schema", "acc", "map", "model_polarity"):
                 return "policy: unknown member '%s'" % k
+        if "model_polarity" in pol and pol["model_polarity"] not in ("strict", "legacy"):
+            return "policy.model_polarity must be 'strict' or 'legacy'"
         if not _opt_obj(pol, "session"):
             return "policy.session must be an object"
         if "session" in pol:
@@ -1743,6 +1982,8 @@ def intent_v2_context_error(ctx: Any) -> Optional[str]:
                 return "policy.map.max_residual_risk_ppm must be a non-negative safe integer"
     if not _opt_obj(ctx, "params"):
         return "params must be an object"
+    if not _opt_obj(ctx, "env"):
+        return "env must be an object"
     for k in ("schema", "session", "acc"):
         if not _opt_obj(ctx, k):
             return "%s must be an object" % k
@@ -2169,6 +2410,7 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
     if not present:
         if map_active:
             run("map", lambda: _map_step(p, ctx))
+        _model_rules(out, p, grant, ctx, run, action)
         return
 
     def acc():
@@ -2193,6 +2435,8 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
     except Exception as e:  # noqa: BLE001
         out["checks"].append({"name": "facts", "ok": False, "reason": "W-B error (fail closed): %s" % e})
     if wb is not None:
+        if wb.get("single_source"):
+            out["single_source"] = list(wb["single_source"])
         checks = wb.get("checks") or {}
         reason = wb.get("reason")
         for name in ("facts", "provenance", "classes"):
@@ -2213,6 +2457,71 @@ def _decide_intent_v2(out: dict, p: Any, grant: Any, ctx: Any, now: Any) -> None
                 if wenv.get(k) is not None:
                     merged[k] = wenv[k]
             out["env"] = merged
+    _model_rules(out, p, grant, ctx, run, action)
+
+
+def _allow_side_predicates(env: Any, ctx: Any) -> list:
+    """The predicate lists a model-derived path could widen: the grant's allow-list and the ceilings (V5 layers)."""
+    lists: list = [None if env is None else env.get("predicates")]
+    layers = _prop(ctx, "layers")
+    if isinstance(layers, dict):
+        for k in ("org", "site", "std"):
+            e = layers.get(k)
+            lists.append(e.get("predicates") if isinstance(e, dict) else None)
+    return lists
+
+
+def _model_rules(out: dict, p: Any, grant: Any, ctx: Any, run: Any, action: dict) -> None:
+    """Rules 20 and 21 (intent-v2.ts `modelRules`), evaluated last so the verifier-computed `env` is complete. Both read the
+    signed ENVELOPE of the stored grant:
+      `units` (20): reported iff `envelope.units` is present.
+      `tighten` (21): reported iff `envelope.tighten` or a `model_polarity` (envelope or policy) is present, or a grant-side
+      `where` reads a model-derived env path (so that case is refused, never silently skipped). A PCActn with none of these
+      verifies byte-identically to a verifier without the two rules."""
+    from .authorize import read_envelope  # deferred: authorize imports this package's core
+    env = read_envelope(grant)
+    preds = _allow_side_predicates(env, ctx)
+    if env is not None and "units" in env:
+        def units():
+            if "schema" in out:
+                doc = out["schema"]
+            else:
+                s = _schema_step(p, ctx)
+                if not s["ok"]:
+                    return s
+                doc = s["doc"]
+            v = schema_verb(doc, action["verb"])
+            inp = {"units": env["units"], "verb": action["verb"], "predicates": preds}
+            su = _prop(doc, "units")
+            if su is not _UNDEF:  # an explicit null is NOT absent (rule 20 refuses it)
+                inp["schema_units"] = su
+            if v is not None and "params" in v:
+                inp["verb_params"] = v["params"]
+            d = decide_units(inp)
+            return {"ok": True} if d["ok"] else _bad(d["reason"])
+        run("units", units)
+    single = out.get("single_source") or []
+    pol = _prop(_prop(ctx, "policy"), "model_polarity")
+    if pol == "strict":
+        polarity = _UNDEF
+    elif pol is not _UNDEF:
+        polarity = pol
+    else:
+        polarity = _UNDEF if env is None else env.get("model_polarity", _UNDEF)
+    if (env is not None and "tighten" in env) or polarity is not _UNDEF or pol is not _UNDEF or model_paths_read(preds, single):
+        def tighten_rule():
+            host_env = _prop(ctx, "env")
+            inp = {"predicates": preds, "single_source": single,
+                   "context": {"action": action, "env": dict(host_env if isinstance(host_env, dict) else {}, **(out.get("env") or {}))}}
+            if env is not None and "tighten" in env:
+                inp["tighten"] = env["tighten"]
+            if polarity is not _UNDEF:
+                inp["polarity"] = polarity
+            r = decide_tighten(inp)
+            if r["legacy"]:
+                out["legacy_model_polarity"] = True
+            return {"ok": True} if r["outcome"] == "ok" else _bad(r.get("reason") or "refused")
+        run("tighten", tighten_rule)
 
 
 def _map_step(p: dict, ctx: Any) -> dict:

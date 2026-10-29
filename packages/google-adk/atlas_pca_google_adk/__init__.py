@@ -10,6 +10,7 @@ from ._proof import (  # noqa: F401
     PCA_STATE_KEY,
     coerce_pcactn,
     current_proof,
+    current_provenance,
     pca_context,
     proof_from_tool_context,
     reset_pca_action,
@@ -18,7 +19,9 @@ from ._proof import (  # noqa: F401
 from .callback import (  # noqa: F401
     BeforeToolCallback,
     RequireSpec,
+    pca_after_tool_callback,
     pca_before_tool_callback,
+    pca_tool_callbacks,
 )
 from .tool import (  # noqa: F401
     GuardedTool,
@@ -26,6 +29,7 @@ from .tool import (  # noqa: F401
     pca_tool,
 )
 from .verifier import (  # noqa: F401
+    AuthorizeVerifier,
     CoreVerifier,
     GrantResolver,
     ToolDecision,
@@ -33,6 +37,7 @@ from .verifier import (  # noqa: F401
 )
 
 __all__ = [
+    "AuthorizeVerifier",
     "BeforeToolCallback",
     "CoreVerifier",
     "GrantResolver",
@@ -45,7 +50,10 @@ __all__ = [
     "Verifier",
     "coerce_pcactn",
     "current_proof",
+    "current_provenance",
+    "pca_after_tool_callback",
     "pca_before_tool_callback",
+    "pca_tool_callbacks",
     "pca_context",
     "pca_tool",
     "proof_from_tool_context",

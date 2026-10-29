@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (0.5.0)
+
+- Tier: production (pending CI), up from experimental: the full `authorize` pipeline is the default, and the README has a fail-closed table and a limits section. Version 0.5.0 in lockstep.
+- **Breaking:** the default is the full `authorize` pipeline. A guard built without `authorize` options refuses every call with `authorize_config` (naming the missing store and revocation check); it never downgrades to signature-only. Signature-only is the explicit opt-in `signature_only=True` (`pca_tool(..., signature_only=True)`, `guard_crew(..., signature_only=True)`); combining it with `authorize` raises `ValueError`, and a custom `verifier=` needs `signature_only=True`.
+- **Breaking:** the dependency range is `atlas-pca>=0.5,<0.6`. The check `counter` is `counter_format` in core verdicts and `replay` in `authorize` results; a replay refusal reads `replay: N is not greater than last seen M (replay)`. An unmet predicate limit is named in the refusal (`amount <= 100 not satisfied for payments.send on payments/acme`).
+- **Breaking:** provenance by default. Each tool call's provenance bundle is forwarded to `authorize`, whose `provenance_flow` check refuses a sensitive call whose choice or arguments do not derive from the principal (`escalate`) or whose bundle is forged (`deny`). New `provenance=` (a per-call bundle source) and `recorder=` (the agent session's `ProvenanceRecorder`: it builds the bundle for a call that presents none and records every allowed tool result as untrusted tool output) on `pca_tool` and `guard_tools`, `guard_crew` and `PcaToolGuard` (`pca_provenance`, `pca_recorder`); `pca_context(proof, provenance=bundle)` binds a bundle; `current_provenance()` reads it. Pin the recording mediator in `AuthorizeOptions(provenance_mediators=...)`.
+- Added: `authorize=` (an `atlas_pca.AuthorizeOptions`) runs the full `atlas-pca` 0.5 pipeline for each tool call: the proof must be for exactly this call (the tool's capability with the call arguments as params), and the grant's predicates and caveats, revocation and the replay counter are enforced before the tool runs. `AuthorizeVerifier` is the verifier behind it. Needs `atlas-pca` 0.5.
+- The `test-real` extra now pins CrewAI 1.15.30 (was 1.15.26). 1.15.26 required `uv<0.12`, and uv before 0.13.4 trusts a revoked CA root (PYSEC-2026-4321); the `crewai` extra also carries a `uv>=0.13.4` floor. No change to the adapter's code or runtime dependencies.
+
 ## 0.4.1 - 2026-10-12
 
 - Requires `atlas-pca>=0.4.1,<0.5`: the 0.4.1 verifier is a security release (root caveats are enforced). No API change in this adapter.

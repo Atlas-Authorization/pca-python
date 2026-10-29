@@ -5,7 +5,7 @@ verifies a proof-carrying action *before* the tool runs and fails closed otherwi
 
 * no proof, or an undecodable one                      -> reject (the tool never runs)
 * a proof that does not verify under the core verifier -> reject (bad signature / chain / validity /
-  wrong audience / unknown grant / replay counter)
+  wrong audience / unknown grant / malformed counter; the counter is format-checked, not replay-checked)
 * a valid proof whose authorized action does not satisfy the tool's required capability -> reject
 * an optional ``policy`` hook that returns a reason    -> reject
 * otherwise                                            -> run the real tool
@@ -18,12 +18,12 @@ FastMCP is imported optionally/duck-typed, so the package imports and the pure d
 (:meth:`PCAMiddleware.decide`) are testable with FastMCP absent.
 """
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Tuple
 
 from atlas_pca.pca import Verdict
 
 from .capability import Capability, ToolCapability, capability_satisfies, parse_capability, resolve_required
-from .extract import PCA_META_KEY, extract_pcactn
+from .extract import PCA_META_KEY, PROV_META_KEY, extract_pcactn, extract_provenance
 from .registry import DEFAULT_REGISTRY, CapabilityRegistry
 from .verifier import GrantResolver, Verifier
 
@@ -42,6 +42,8 @@ class PCADecision:
     required: Optional[Capability] = None
     verdict: Optional[Verdict] = None
     pcactn: Optional[dict] = None
+    #: authorize mode: the full ``atlas_pca.AuthorizeResult`` (checks, reasons, bound operation)
+    authorization: Any = None
 
 
 # PCAAccessDenied subclasses FastMCP's ``ToolError`` when FastMCP is installed, so a rejection surfaces
@@ -113,6 +115,14 @@ def _read_call(context: object) -> Tuple[str, object, object]:
     return name, meta, arguments
 
 
+def _authorize_options(authorize: Any) -> Any:
+    from atlas_pca.authorize import AuthorizeOptions  # atlas-pca 0.5+
+
+    if authorize is None:
+        return AuthorizeOptions()  # empty: every call is refused (authorize_config) until a store etc. is supplied
+    return AuthorizeOptions(**dict(authorize)) if isinstance(authorize, Mapping) else authorize
+
+
 class PCAMiddleware(_MiddlewareBase):
     """FastMCP middleware enforcing a PCActn on every ``tools/call``.
 
@@ -130,9 +140,18 @@ class PCAMiddleware(_MiddlewareBase):
         registry: CapabilityRegistry = DEFAULT_REGISTRY,
         now: Optional[int] = None,
         meta_key: str = PCA_META_KEY,
+        authorize: Any = None,
+        resolve_grant: Optional[GrantResolver] = None,
+        signature_only: bool = False,
+        recorder: Any = None,
     ) -> None:
         if _MiddlewareBase is not object:
             super().__init__()
+        if signature_only and authorize is not None:
+            raise ValueError("signature_only and authorize are mutually exclusive")
+        if not signature_only and resolve_grant is None:
+            raise ValueError("the middleware runs the full authorize pipeline by default and needs resolve_grant; "
+                             "pass signature_only=True to verify the signature only")
         if not audience:
             raise ValueError("pca_guard requires a non-empty audience (this server's RFC 8707 resource)")
         self.audience = audience
@@ -142,6 +161,10 @@ class PCAMiddleware(_MiddlewareBase):
         self.registry = registry
         self.now = now
         self.meta_key = meta_key
+        self.authorize = None if signature_only else _authorize_options(authorize)
+        self.resolve_grant = resolve_grant
+        #: the agent session's ``atlas_pca.ProvenanceRecorder`` when the agent runs in this process (see :func:`pca_guard`)
+        self.recorder = recorder
 
     def _required_for(self, tool_name: str) -> Optional[Capability]:
         """Required capability for a tool: an explicit ``tool_capability`` rule wins, else the registry."""
@@ -156,6 +179,8 @@ class PCAMiddleware(_MiddlewareBase):
         if pcactn is None:
             reason = "no PCActn presented" if err == "absent" else "PCActn could not be decoded"
             return PCADecision(allow=False, tool=tool_name, reason=reason)
+        if self.authorize is not None:
+            return self._decide_authorized(tool_name, pcactn, arguments, meta)
 
         verdict = self.verifier.verify(pcactn, audience=self.audience, now=self.now)
         if not verdict.allow:
@@ -188,6 +213,46 @@ class PCAMiddleware(_MiddlewareBase):
 
         return PCADecision(allow=True, tool=tool_name, required=required, verdict=verdict, pcactn=pcactn)
 
+    def _decide_authorized(self, tool_name: str, pcactn: dict, arguments: object, meta: object = None) -> PCADecision:
+        """Authorize mode: ``atlas_pca.authorize`` with the operation = the tool's exact required capability and
+        the call arguments (without a proof carried in them) as params. A tool without an exact capability (none, or
+        a wildcard) or with unreadable arguments is refused (fail closed). The ``policy`` hook still runs after."""
+        from atlas_pca.authorize import authorize_tool_call  # atlas-pca 0.5+
+
+        required = self._required_for(tool_name)
+        exact = required is not None and "*" not in required.verb and "*" not in required.resource
+        params = None
+        if isinstance(arguments, Mapping):
+            params = {k: v for k, v in arguments.items() if k not in (self.meta_key, PROV_META_KEY)}
+        elif arguments is None:
+            params = {}
+        # provenance by default: the agent's bundle rides with the proof; an unreadable one refuses (fail closed)
+        bundle, perr = extract_provenance(meta, arguments)
+        if perr is not None:
+            return PCADecision(allow=False, tool=tool_name, required=required, pcactn=pcactn,
+                               reason="provenance_flow: the provenance bundle is unreadable (fail closed)")
+        if bundle is None and self.recorder is not None and exact and params is not None:
+            try:
+                bundle = self.recorder.for_action({"verb": required.verb, "resource": required.resource,
+                                                   "params": dict(params)})
+            except Exception:  # noqa: BLE001  (fail closed: a recorder that fails never lets the call through)
+                return PCADecision(allow=False, tool=tool_name, required=required, pcactn=pcactn,
+                                   reason="provenance_flow: the provenance bundle could not be recorded (fail closed)")
+        r = authorize_tool_call(self.authorize, pcactn, verb=required.verb if exact else None,
+                                resource=required.resource if exact else None, params=params,
+                                audience=self.audience, resolve_grant=self.resolve_grant, now=self.now,
+                                provenance=bundle)
+        if not r.allow:
+            return PCADecision(allow=False, tool=tool_name, required=required, verdict=r.verdict, pcactn=pcactn,
+                               reason=r.reason, authorization=r)
+        if self.policy is not None:
+            policy_reason = self.policy(pcactn, tool_name, r.verdict)
+            if policy_reason:
+                return PCADecision(allow=False, tool=tool_name, required=required, verdict=r.verdict,
+                                   pcactn=pcactn, reason="policy_denied: %s" % policy_reason, authorization=r)
+        return PCADecision(allow=True, tool=tool_name, required=required, verdict=r.verdict, pcactn=pcactn,
+                           authorization=r)
+
     async def on_call_tool(self, context: object, call_next: CallNext) -> object:
         """FastMCP hook: verify before the tool runs; raise on deny, else proceed."""
         name, meta, arguments = _read_call(context)
@@ -198,7 +263,11 @@ class PCAMiddleware(_MiddlewareBase):
         # (schema-validating) tool never sees an undeclared argument.
         if isinstance(arguments, dict):
             arguments.pop(self.meta_key, None)
-        return await call_next(context)
+            arguments.pop(PROV_META_KEY, None)
+        result = await call_next(context)
+        if self.recorder is not None:  # provenance by default: the tool's result is untrusted content for later calls
+            self.recorder.tool(name or "tool", result)
+        return result
 
 
 def pca_guard(
@@ -211,6 +280,9 @@ def pca_guard(
     registry: CapabilityRegistry = DEFAULT_REGISTRY,
     now: Optional[int] = None,
     meta_key: str = PCA_META_KEY,
+    authorize: Any = None,
+    signature_only: bool = False,
+    recorder: Any = None,
 ) -> PCAMiddleware:
     """Build the FastMCP middleware that enforces a PCActn on every ``tools/call``.
 
@@ -220,26 +292,52 @@ def pca_guard(
                           A tool with no entry needs only a valid proof; otherwise the proof's action
                           must satisfy the capability. The :func:`pca_tool` decorator feeds the shared
                           registry, which is consulted when no explicit rule matches.
-    ``verifier``        — a :class:`~atlas_pca_fastmcp.verifier.Verifier`. Omit it and pass
-                          ``resolve_grant`` to use the default :class:`CoreVerifier`.
+    ``verifier``        — a :class:`~atlas_pca_fastmcp.verifier.Verifier`; only with ``signature_only=True``.
+    ``resolve_grant``   — ``grant_ref -> grant | None``; required.
     ``policy``          — optional extra check run after the proof and capability pass.
     ``now``             — fixed validity clock (epoch ms); handy for tests.
+    ``authorize``       — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its
+                          fields: ``state_store``, ``is_revoked``, ...). The proof must be for exactly this call (the
+                          tool's exact ``verb:resource`` capability with the call arguments as params), and the
+                          grant's predicates and caveats, revocation and the replay counter are enforced before the
+                          tool runs. A tool without an exact capability is refused. Needs ``resolve_grant``. Without
+                          ``authorize`` every call is refused (``authorize_config``).
+    ``signature_only``  — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                          only (no policy, replay or revocation). Cannot be combined with ``authorize``.
+
+    Provenance by default (authorize mode): the agent's provenance bundle travels next to the proof, in the request
+    ``_meta`` under ``"PCA-Provenance"`` (base64url JSON; the tool arguments are the fallback, stripped before the tool
+    runs), and is forwarded to ``authorize``. Pin the agent's recording mediator in ``authorize.provenance_mediators``.
+    Without a bundle a sensitive tool call escalates instead of running; an unreadable one is refused.
+    ``recorder``        — only when the agent runs in this process: its session's ``atlas_pca.ProvenanceRecorder``. A
+                          call that presents no bundle gets ``recorder.for_action(operation)``, and every tool result is
+                          recorded in it as UNTRUSTED tool output.
 
     Wire it in one line::
 
-        mcp.add_middleware(pca_guard(audience="mcp://orders", resolve_grant=my_resolver,
+        mcp.add_middleware(pca_guard(audience="mcp://orders", resolve_grant=my_resolver, authorize=options,
                                      tool_capability={"transfer_funds": "write:db/orders"}))
     """
-    if verifier is None:
+    if signature_only and authorize is not None:
+        raise ValueError("pca_guard: signature_only and authorize are mutually exclusive")
+    if not signature_only:
+        if verifier is not None or resolve_grant is None:
+            raise ValueError("pca_guard runs the full authorize pipeline by default and needs resolve_grant (and no "
+                             "verifier); pass signature_only=True to verify the signature only")
+        from .verifier import CoreVerifier
+        verifier = CoreVerifier(resolve_grant=resolve_grant, now=now)  # unused in authorize mode
+    elif verifier is None:
         if resolve_grant is None:
             raise ValueError("pca_guard needs a verifier or a resolve_grant callback")
         from .verifier import CoreVerifier
         verifier = CoreVerifier(resolve_grant=resolve_grant, now=now)
+        resolve_grant = None
     elif resolve_grant is not None:
         raise ValueError("pass either verifier or resolve_grant, not both")
     return PCAMiddleware(
         audience=audience, verifier=verifier, policy=policy, tool_capability=tool_capability,
-        registry=registry, now=now, meta_key=meta_key,
+        registry=registry, now=now, meta_key=meta_key, authorize=authorize, resolve_grant=resolve_grant,
+        signature_only=signature_only, recorder=recorder,
     )
 
 
