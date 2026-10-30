@@ -13,7 +13,7 @@ Each tool's required capability comes from ``require``, which is one of:
 """
 from __future__ import annotations
 
-from typing import Any, Callable, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from .tool import pca_tool
 from .verifier import GrantResolver, Verifier
@@ -38,11 +38,15 @@ def _require_for(tool: Any, require: RequireSpec) -> Optional[str]:
 
 def guard_tools(tools: List[Any], *, audience: str, require: RequireSpec,
                 verifier: Optional[Verifier] = None, resolve_grant: Optional[GrantResolver] = None,
-                now: Optional[int] = None) -> List[Any]:
+                now: Optional[int] = None, authorize: Any = None, signature_only: bool = False,
+                provenance: Optional[Callable[[Dict[str, Any]], Any]] = None, recorder: Any = None) -> List[Any]:
     """Return a new list where every tool with a resolved ``require`` is wrapped by :func:`pca_tool`.
 
-    Tools whose ``require`` resolves to ``None`` are passed through unchanged.
+    Tools whose ``require`` resolves to ``None`` are passed through unchanged. ``authorize``, ``signature_only``,
+    ``provenance`` and ``recorder`` are forwarded to :func:`pca_tool` (the default is the full authorize pipeline).
     """
+    az = {"signature_only": signature_only, "provenance": provenance, "recorder": recorder,
+          **({"authorize": authorize} if authorize is not None else {})}
     guarded: List[Any] = []
     for tool in tools:
         req = _require_for(tool, require)
@@ -50,36 +54,43 @@ def guard_tools(tools: List[Any], *, audience: str, require: RequireSpec,
             guarded.append(tool)
             continue
         guarded.append(
-            pca_tool(req, audience=audience, verifier=verifier, resolve_grant=resolve_grant, now=now)(tool)
+            pca_tool(req, audience=audience, verifier=verifier, resolve_grant=resolve_grant, now=now, **az)(tool)
         )
     return guarded
 
 
 def _guard_holder(holder: Any, *, audience: str, require: RequireSpec,
                   verifier: Optional[Verifier], resolve_grant: Optional[GrantResolver],
-                  now: Optional[int]) -> None:
+                  now: Optional[int], authorize: Any = None, signature_only: bool = False,
+                  provenance: Any = None, recorder: Any = None) -> None:
     """Replace ``holder.tools`` in place with guarded tools, if the holder has a non-empty list."""
     tools = getattr(holder, "tools", None)
     if tools:
         holder.tools = guard_tools(list(tools), audience=audience, require=require,
-                                   verifier=verifier, resolve_grant=resolve_grant, now=now)
+                                   verifier=verifier, resolve_grant=resolve_grant, now=now, authorize=authorize,
+                                   signature_only=signature_only, provenance=provenance, recorder=recorder)
 
 
 def guard_crew(crew: Any, *, audience: str, require: RequireSpec,
                verifier: Optional[Verifier] = None, resolve_grant: Optional[GrantResolver] = None,
-               now: Optional[int] = None) -> Any:
+               now: Optional[int] = None, authorize: Any = None, signature_only: bool = False,
+               provenance: Optional[Callable[[Dict[str, Any]], Any]] = None, recorder: Any = None) -> Any:
     """Guard every tool reachable from ``crew`` (its agents, its tasks, and any crew-level tools).
 
-    Call it once before ``crew.kickoff(...)``. Returns the same ``crew`` for chaining.
+    Call it once before ``crew.kickoff(...)``. Returns the same ``crew`` for chaining. ``authorize``, ``signature_only``,
+    ``provenance`` and ``recorder`` are forwarded to :func:`pca_tool`.
     """
     for agent in getattr(crew, "agents", None) or []:
         _guard_holder(agent, audience=audience, require=require, verifier=verifier,
-                      resolve_grant=resolve_grant, now=now)
+                      resolve_grant=resolve_grant, now=now, authorize=authorize, signature_only=signature_only,
+                      provenance=provenance, recorder=recorder)
     for task in getattr(crew, "tasks", None) or []:
         _guard_holder(task, audience=audience, require=require, verifier=verifier,
-                      resolve_grant=resolve_grant, now=now)
+                      resolve_grant=resolve_grant, now=now, authorize=authorize, signature_only=signature_only,
+                      provenance=provenance, recorder=recorder)
     _guard_holder(crew, audience=audience, require=require, verifier=verifier,
-                  resolve_grant=resolve_grant, now=now)
+                  resolve_grant=resolve_grant, now=now, authorize=authorize, signature_only=signature_only,
+                  provenance=provenance, recorder=recorder)
     return crew
 
 
@@ -98,7 +109,8 @@ class PcaToolGuard:
             def _guard(self, inputs):
                 return self.pca_guard_tools(inputs)
 
-    ``pca_require`` is a :data:`RequireSpec`. Provide either ``pca_verifier`` or ``pca_resolve_grant``.
+    ``pca_require`` is a :data:`RequireSpec`. Provide ``pca_resolve_grant`` and ``pca_authorize`` (the default full pipeline), or set ``pca_signature_only`` with
+    either ``pca_verifier`` or ``pca_resolve_grant``.
     """
 
     pca_audience: str = ""
@@ -106,11 +118,20 @@ class PcaToolGuard:
     pca_verifier: Optional[Verifier] = None
     pca_resolve_grant: Optional[GrantResolver] = None
     pca_now: Optional[int] = None
+    #: the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (see :func:`pca_tool`)
+    pca_authorize: Any = None
+    #: explicit opt-in to verifying the signature only (cannot be combined with ``pca_authorize``)
+    pca_signature_only: bool = False
+    #: provenance by default: the per-call bundle source and the agent session's recorder (see :func:`pca_tool`)
+    pca_provenance: Optional[Callable[[Dict[str, Any]], Any]] = None
+    pca_recorder: Any = None
 
     def pca_guard_tools(self, inputs: Any = None) -> Any:
         """Guard every tool on this crew, then return ``inputs`` unchanged (so it chains as a hook)."""
         if not self.pca_audience:
             raise ValueError("PcaToolGuard requires a non-empty `pca_audience`")
         guard_crew(self, audience=self.pca_audience, require=self.pca_require,
-                   verifier=self.pca_verifier, resolve_grant=self.pca_resolve_grant, now=self.pca_now)
+                   verifier=self.pca_verifier, resolve_grant=self.pca_resolve_grant, now=self.pca_now,
+                   signature_only=self.pca_signature_only, provenance=self.pca_provenance, recorder=self.pca_recorder,
+                   **({"authorize": self.pca_authorize} if self.pca_authorize is not None else {}))
         return inputs

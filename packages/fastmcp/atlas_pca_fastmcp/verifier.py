@@ -1,8 +1,9 @@
 """The verification seam the middleware depends on.
 
 The middleware never calls crypto directly; it calls a :class:`Verifier`. :class:`CoreVerifier` is the
-default, wrapping :func:`atlas_pca.verify_pcactn_core` (the shared reference verifier: the 8 offline
-checks — wire, version, audience, validity, chain, plan inclusion, leaf signature, counter) and adding
+default, wrapping :func:`atlas_pca.verify_pcactn_core` (the shared reference verifier: the 9 offline
+checks — wire, version, audience, validity, chain, grant_ref_bound, plan inclusion, leaf signature, counter_format;
+the counter_format check is format only, not replay protection) and adding
 the one thing a resource server must supply itself, a ``grant_ref -> grant`` resolver.
 
 Swapping in a different :class:`Verifier` (e.g. one that also consults a revocation beacon, or a remote

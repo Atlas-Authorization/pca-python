@@ -749,6 +749,83 @@ def _predicate_matches_inner(p: Any, ctx: Any) -> bool:
         return False
 
 
+_OP_TEXT = {"eq": "==", "ne": "!=", "lt": "<", "lte": "<=", "gt": ">", "gte": ">=", "in": "in", "nin": "not in",
+            "prefix": "starts with", "like": "like", "matches": "matches", "is_a": "is a", "member_of": "member of"}
+_MAX_SHOWN_STRING = 64
+_MAX_SHOWN_ITEMS = 8
+_MAX_SAFE = 9007199254740991
+
+
+def _show_value(v: Any, depth: int = 0) -> str:
+    """A scalar operand in a denial reason (byte-identical to the TypeScript ``showValue``)."""
+    if v is None:
+        return "null"
+    if v is True or v is False:
+        return "true" if v else "false"
+    if _is_num(v):
+        return str(int(v)) if (isinstance(v, int) or (math.isfinite(v) and v == int(v))) and abs(v) <= _MAX_SAFE else "<number>"
+    if isinstance(v, str):
+        ok = (utf16_len(v) <= _MAX_SHOWN_STRING
+              and not any(ord(ch) < 0x20 or ch in '"\\' or ord(ch) > 0xFFFF or 0xD800 <= ord(ch) <= 0xDFFF for ch in v))
+        return '"%s"' % v if ok else '"..."'
+    if _is_arr(v) and depth == 0:
+        return "[%s]" % ", ".join(_show_value(x, 1) for x in v) if len(v) <= _MAX_SHOWN_ITEMS else "[...]"
+    return "<value>"
+
+
+def _describe_condition(c: Any, depth: int = 0) -> str:
+    """The condition as the limit a reader recognises: ``amount <= 500`` (the TypeScript ``describeCondition``)."""
+    if not _is_obj(c):
+        return "<condition>"
+    if is_group_condition(c):
+        if depth >= 2:
+            return "(...)"
+        for key, label in (("all_of", "all of"), ("any_of", "any of")):
+            if key in c and _is_arr(c[key]):
+                return "%s (%s)" % (label, "; ".join(_describe_condition(x, depth + 1) for x in c[key][:_MAX_SHOWN_ITEMS]))
+        if "not" in c:
+            return "not (%s)" % _describe_condition(c["not"], depth + 1)
+        return "<condition>"
+    f = _get(c, "field")
+    f = f if isinstance(f, str) else "<field>"
+    name = f[len("action.params."):] if f.startswith("action.params.") else f
+    op = _get(c, "op")
+    if op == "exists":
+        return "%s absent" % name if _get(c, "value") is False else "%s present" % name
+    text = _OP_TEXT.get(op) if isinstance(op, str) else None
+    if text is None:
+        return "%s <condition>" % name
+    ref = _get(c, "ref")
+    return "%s %s %s" % (name, text, (ref if isinstance(ref, str) else "<ref>") if ref is not _UNDEF else _show_value(_get(c, "value")))
+
+
+def _narrowest_unmet(c: Any, ctx: Any, depth: int = 0) -> Any:
+    if depth < 4 and is_group_condition(c) and "all_of" in c and _is_arr(c["all_of"]):
+        for x in c["all_of"]:
+            if not evaluate_condition(x, ctx):
+                return _narrowest_unmet(x, ctx, depth + 1)
+    return c
+
+
+def _first_unmet_limit(predicates: Any, ctx: Any) -> Optional[str]:
+    """0.5 (B6): when a predicate's verb and resource are in scope but a ``where`` limit is not met, name that limit."""
+    a = _action(ctx)
+    verb = _get(a, "verb") if _is_obj(a) else _UNDEF
+    resource = _get(a, "resource") if _is_obj(a) else _UNDEF
+    if not isinstance(verb, str) or not isinstance(resource, str):
+        return None
+    for p in predicates:
+        if not _is_obj(p) or not _verb_matches(_get(p, "verb"), verb) or not _resource_matches(_get(p, "resource"), resource):
+            continue
+        where = _get(p, "where")
+        if not _is_arr(where):
+            continue
+        for c in where:
+            if not evaluate_condition(c, ctx):
+                return _describe_condition(_narrowest_unmet(c, ctx))
+    return None
+
+
 def evaluate_predicates(predicates: Any, ctx: Any) -> dict:
     """An action is allowed iff it matches AT LEAST ONE predicate. Default-deny: an empty list allows nothing.
     Returns {"allowed": True, "matched": p} or {"allowed": False, "reason": str}. Never raises."""
@@ -768,6 +845,9 @@ def _evaluate_predicates_inner(predicates: Any, ctx: Any) -> dict:
         a = _action(ctx)
         verb = _get(a, "verb") if a is not _UNDEF and a is not None else _UNDEF
         resource = _get(a, "resource") if a is not _UNDEF and a is not None else _UNDEF
+        limit = _first_unmet_limit(predicates, ctx)
+        if limit is not None:
+            return {"allowed": False, "reason": "%s not satisfied for %s on %s" % (limit, _js_string(verb), _js_string(resource))}
         return {"allowed": False, "reason": "no predicate permits %s on %s" % (_js_string(verb), _js_string(resource))}
     except Exception:
         return {"allowed": False, "reason": "predicate evaluation error (fail closed)"}

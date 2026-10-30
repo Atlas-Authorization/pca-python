@@ -92,7 +92,7 @@ G = _root([{"type": "max_spend", "usd": 1}, ENV])
 P_BOUND = _pcactn(G, intent=dict(INTENT))
 P_PLAIN = _pcactn(G)
 ALL_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-          "plan_inclusion": True, "leaf_signature": True, "counter": True}
+          "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 
 
 def _verify(p, grant=G, policy=None, **kw):

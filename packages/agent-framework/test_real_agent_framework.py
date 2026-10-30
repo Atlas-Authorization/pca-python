@@ -76,7 +76,7 @@ def _run(agent: Agent) -> None:
 def test_guarded_tool_is_a_real_function_tool_and_keeps_its_fields() -> None:
     raw = tool(_raw().func, name="place_order", description="Place an order", approval_mode="never_require",
                additional_properties={"k": "v"})
-    g = pca_tool(REQUIRE, **_opts())(raw)
+    g = pca_tool(REQUIRE, **_opts(), signature_only=True)(raw)
     assert isinstance(g, FunctionTool)
     assert g.name == "place_order"
     assert g.description == "Place an order"
@@ -84,7 +84,7 @@ def test_guarded_tool_is_a_real_function_tool_and_keeps_its_fields() -> None:
 
 
 def test_pca_tool_allows_with_proof_in_real_agent() -> None:
-    agent = Agent(client=_ScriptedClient(), tools=[pca_tool(REQUIRE, **_opts())(_raw())])
+    agent = Agent(client=_ScriptedClient(), tools=[pca_tool(REQUIRE, **_opts(), signature_only=True)(_raw())])
     with pca_context(PCACTN):
         _run(agent)
     assert RAN == ["A1"]
@@ -93,7 +93,7 @@ def test_pca_tool_allows_with_proof_in_real_agent() -> None:
 
 @pytest.mark.parametrize("proof", [None, "tampered"])
 def test_pca_tool_denies_in_real_agent(proof: Any) -> None:
-    agent = Agent(client=_ScriptedClient(), tools=[pca_tool(REQUIRE, **_opts())(_raw())])
+    agent = Agent(client=_ScriptedClient(), tools=[pca_tool(REQUIRE, **_opts(), signature_only=True)(_raw())])
     with pca_context(tampered_pcactn() if proof else None):
         _run(agent)
     assert RAN == []
@@ -101,7 +101,7 @@ def test_pca_tool_denies_in_real_agent(proof: Any) -> None:
 
 
 def test_function_middleware_allows_and_denies_in_real_agent() -> None:
-    mw = pca_function_middleware(**_opts(), require={"place_order": REQUIRE})
+    mw = pca_function_middleware(**_opts(), require={"place_order": REQUIRE}, signature_only=True)
     agent = Agent(client=_ScriptedClient(), tools=[_raw()], middleware=[mw])
     with pca_context(PCACTN):
         _run(agent)
@@ -120,9 +120,59 @@ def test_function_middleware_wrong_audience_and_capability_denied() -> None:
     for kw in ({"audience": "rs-other"}, {"require": {"place_order": "write:other/thing"}}):
         opts = _opts()
         opts.pop("audience") if "audience" in kw else None
-        mw = pca_function_middleware(**{"require": {"place_order": REQUIRE}, **opts, **kw})
+        mw = pca_function_middleware(**{"require": {"place_order": REQUIRE}, **opts, **kw}, signature_only=True)
         agent = Agent(client=_ScriptedClient(), tools=[_raw()], middleware=[mw])
         RAN.clear()
         with pca_context(PCACTN):
             _run(agent)
         assert RAN == []
+
+
+# ---- opt-in authorize (atlas-pca 0.5) against the real framework -------------------------------------------------------
+
+def _az_fixtures() -> Any:
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "testdata",
+                         "authorize-fixtures.json")
+    with open(path, encoding="utf-8") as fh:
+        fx = _json.load(fh)
+    proofs = {c["name"]: c["steps"][0]["pcactn"] for c in fx["cases"]}
+    grants = {c["grant"]["id"]: c["grant"] for c in fx["cases"]}
+    return fx["now"], fx["audience"], grants, proofs["envelope-max-spend-within"], proofs["envelope-max-spend-400-refused"]
+
+
+AZ_NOW, AZ_AUD, AZ_GRANTS, AZ_P50, AZ_P400 = _az_fixtures()
+AZ_SEND = "payments.send:payments/acme"
+
+
+def _az_opts() -> Any:
+    from atlas_pca import AuthorizeOptions, MemoryStateStore
+    from prov_harness import PIN
+
+    # provenance by default stays on: the harness mediator is pinned and each call presents its principal-direct bundle
+    return AuthorizeOptions(state_store=MemoryStateStore(), is_revoked=lambda p, g: False, provenance_mediators=[PIN])
+
+
+def test_real_authorize_refuses_400_and_replay() -> None:
+    @tool
+    async def send_payment(amount: int, currency: str) -> str:
+        """Send a payment."""
+        RAN.append("%d %s" % (amount, currency))
+        return "sent %d" % amount
+
+    from atlas_pca_agent_framework import PcaToolDenied
+
+    from prov_harness import bundle_for
+
+    g = pca_tool(AZ_SEND, audience=AZ_AUD, resolve_grant=AZ_GRANTS.get, now=AZ_NOW, authorize=_az_opts(),
+                 provenance=bundle_for)(send_payment)
+    assert isinstance(g, FunctionTool)
+    with pytest.raises(PcaToolDenied) as ei:
+        asyncio.run(g.func(amount=400, currency="usd", pca_action=AZ_P400))
+    assert ei.value.decision.reason == "policy: caveat(s) not satisfied: max_spend"
+    assert asyncio.run(g.func(amount=50, currency="usd", pca_action=AZ_P50)) == "sent 50"
+    with pytest.raises(PcaToolDenied):
+        asyncio.run(g.func(amount=50, currency="usd", pca_action=AZ_P50))  # replay
+    assert RAN == ["50 usd"]
