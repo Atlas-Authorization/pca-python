@@ -1,6 +1,6 @@
 [project]
 name = "atlas-pca"
-version = "0.4.3"
+version = "0.5.0"
 description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
 readme = "README.md"
 license = "MIT"
@@ -20,6 +20,8 @@ dependencies = []
 [project.optional-dependencies]
 fast = ["cryptography>=41"]  # optional: native Ed25519; a pure-Python RFC 8032 verifier is the fallback
 pq = ["dilithium-py>=1.0"]   # B4 post-quantum: pure-Python ML-DSA-65/87 (FIPS 204). Without it ML-DSA, and always SLH-DSA (FIPS 205), use OpenSSL >= 3.5 libcrypto via ctypes when present (supported_suites() reports what this runtime can verify)
+attest = ["cryptography>=41"] # vendor hardware-attestation verifiers (atlas_pca.attest): AMD SEV-SNP, Intel TDX DCAP, Azure MAA, GCP Confidential Space, NVIDIA GPU SPDM
+sigstore = ["cryptography>=41"] # offline Sigstore bundle verification (atlas_pca.sigstore_bundle), a port: sigstore-python lacks Rekor v1 intoto 0.0.2
 fastapi = ["fastapi>=0.110"] # optional: FastAPI dependency (atlas_pca.fastapi); base stays dep-free
 django = ["django>=4.2"]     # optional: Django middleware (atlas_pca.django); base stays dep-free
 
@@ -35,3 +37,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["atlas_pca"]
+
+[tool.pca]
+# Maturity tier: stable | production | experimental (the PCA maturity tiers page defines them)
+maturity = "stable"

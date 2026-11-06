@@ -86,3 +86,18 @@ def extract_pcactn(
         return pcactn, err
 
     return None, "absent"
+
+
+#: The key the agent's provenance bundle travels under, next to the proof (provenance by default).
+PROV_META_KEY = "PCA-Provenance"
+
+
+def extract_provenance(meta: object = None, arguments: object = None, *, meta_key: str = PROV_META_KEY) -> Extracted:
+    """Return ``(bundle, error)`` for an MCP ``tools/call``: the provenance bundle from the request ``_meta`` under
+    ``"PCA-Provenance"`` (base64url JSON or the object), else the same key in the tool-call arguments. ``(None, None)`` when
+    absent (the call is then unlabelled: a sensitive tool escalates); ``error == "undecodable"`` when present but unreadable
+    (the guard refuses: fail closed)."""
+    bundle, err = _from_container(_as_mapping(meta), meta_key)
+    if bundle is not None or err is not None:
+        return bundle, err
+    return _from_container(_as_mapping(arguments), meta_key)

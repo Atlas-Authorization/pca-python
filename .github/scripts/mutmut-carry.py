@@ -23,8 +23,9 @@ import ast, glob, hashlib, json, os, re, sys
 from collections import Counter
 
 SRC = "atlas_pca"
-# statuses that are a kill: carried forward unless the function changed. Everything else is re-run.
-KILLED = {"killed", "timeout", "segfault", "caught by type check"}
+# statuses that are a kill: carried forward unless the function changed. Everything else is re-run, including a segfault
+# and a "run error" (mutmut-survivors.py: caught though no test decided it), so each run lists them afresh.
+KILLED = {"killed", "timeout", "caught by type check"}
 
 
 def _h(text):
@@ -138,6 +139,7 @@ def main():
             sys.exit(f"carry-only but the baseline has {len(bad)} non-kill(s), e.g. {bad[0]}")
         json.dump(dict(Counter(res.values())), open("counts.json", "w"))
         json.dump([], open("survivors.json", "w"))
+        json.dump([], open("run-errors.json", "w"))  # a carried kill was decided by a test (run errors are re-run)
         json.dump(res, open("results.json", "w"), indent=0, sort_keys=True, ensure_ascii=False)
         print(f"carried {len(res)} result(s): {dict(Counter(res.values()))}")
     else:

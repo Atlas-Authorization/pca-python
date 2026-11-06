@@ -1,7 +1,7 @@
 """Turn a carried proof + a tool's required capability into an allow/deny decision.
 
 This sits ON TOP of ``atlas_pca.verify_pcactn_core`` (the eight offline CORE checks: wire, version,
-audience, validity, chain, plan_inclusion, leaf_signature, counter). No crypto lives here. It adds the
+audience, validity, chain, plan_inclusion, leaf_signature, counter_format). No crypto lives here. It adds the
 two things a tool guard needs beyond the core checks:
 
 * **resource-server correctness** — the proof's signed ``aud`` must equal this guard's ``audience``
@@ -21,6 +21,8 @@ from typing import Any, Callable, Dict, Optional, Protocol
 
 from atlas_pca.pca import Verdict, verify_pcactn_core
 
+from ._proof import coerce_pcactn, current_provenance
+
 #: ``(grant_ref) -> grant | None`` — resolves the PCActn's ``grant_ref`` to its root grant object.
 GrantResolver = Callable[[Optional[str]], Optional[Dict[str, Any]]]
 
@@ -39,6 +41,8 @@ class ToolDecision:
     verdict: Optional[Verdict] = None
     pcactn: Optional[Dict[str, Any]] = None
     required: Optional[str] = None
+    #: the full ``atlas_pca.AuthorizeResult`` when an :class:`AuthorizeVerifier` decided (checks, bound operation)
+    authorization: Any = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -101,3 +105,75 @@ class CoreVerifier:
             )
 
         return ToolDecision(ok=True, verdict=verdict, pcactn=pcactn, required=required)
+
+
+class AuthorizeVerifier:
+    """Opt-in full pipeline (0.5): each tool call goes through ``atlas_pca.authorize``.
+
+    The operation is the capability the tool requires (``verb``/``resource``) with the tool-call arguments as its
+    params, so the proof must be for exactly this call. On top of the core checks it enforces the grant's envelope
+    predicates, root and delegated caveats (``max_spend``, ``predicates``, ``tool_schema``, ...), revocation
+    (``options.is_revoked``) and the replay counter (``options.state_store``, consumed only when everything else
+    passes). A missing component, a tool without a capability or arguments that cannot be bound deny. ``options`` is an
+    ``atlas_pca.AuthorizeOptions`` or a dict of its fields.
+    """
+
+    #: the guard passes the tool-call arguments as ``params=`` to a verifier that sets this
+    binds_params = True
+
+    def __init__(self, resolve_grant: GrantResolver, options: Any, *, now: Optional[int] = None,
+                 provenance: Optional[Callable[[Dict[str, Any]], Any]] = None, recorder: Any = None) -> None:
+        from atlas_pca.authorize import AuthorizeOptions  # atlas-pca 0.5+
+
+        self._options = AuthorizeOptions(**dict(options)) if isinstance(options, dict) else options
+        self._resolve_grant = resolve_grant
+        self._now = now
+        self._provenance = provenance
+        #: the agent session's ``atlas_pca.ProvenanceRecorder`` (or None): it builds the bundle for a call that presents none,
+        #: and the guards record each allowed tool's result in it as UNTRUSTED tool output
+        self.recorder = recorder
+
+    def bundle(self, verb: Optional[str], resource: Optional[str], params: Optional[Dict[str, Any]]) -> Any:
+        """The provenance bundle for this call (provenance by default): ``provenance(operation)`` when configured, else the
+        bundle bound with :func:`pca_context`, else ``recorder.for_action(operation)``. None = unlabelled: a sensitive call
+        then escalates."""
+        if not isinstance(verb, str) or not isinstance(resource, str) or params is None:
+            return None  # no bindable operation: authorize_tool_call refuses the call before the gate
+        op = {"verb": verb, "resource": resource, "params": dict(params)}
+        raw = self._provenance(op) if self._provenance is not None else current_provenance()
+        if raw is not None:
+            return coerce_pcactn(raw)  # a bundle travels in a proof's encodings (object, JSON, base64url JSON)
+        return self.recorder.for_action(op) if self.recorder is not None else None
+
+    def verify(self, pcactn: Optional[Dict[str, Any]], *, verb: Optional[str], resource: Optional[str],
+               audience: str, params: Optional[Dict[str, Any]] = None) -> ToolDecision:
+        from atlas_pca.authorize import authorize_tool_call
+
+        required = "%s:%s" % (verb, resource)
+        if pcactn is None:
+            return ToolDecision(ok=False, reason="no proof-carrying action presented", required=required)
+        try:
+            bundle = self.bundle(verb, resource, params)
+        except Exception:  # noqa: BLE001  (fail closed: a bundle source or recorder that fails never lets the call through)
+            return ToolDecision(ok=False, pcactn=pcactn, required=required,
+                                reason="provenance_flow: the provenance bundle could not be read or recorded (fail closed)")
+        r = authorize_tool_call(self._options, pcactn, verb=verb, resource=resource, params=params,
+                                audience=audience, resolve_grant=self._resolve_grant, now=self._now, provenance=bundle)
+        return ToolDecision(ok=r.allow, reason=None if r.allow else r.reason, verdict=r.verdict, pcactn=pcactn,
+                            required=required, authorization=r)
+
+
+def verify_call(verifier: Any, pcactn: Optional[Dict[str, Any]], *, verb: Optional[str], resource: Optional[str],
+                audience: str, params: Optional[Dict[str, Any]]) -> ToolDecision:
+    """Call ``verifier.verify``, handing it the tool-call arguments only when it binds them (``binds_params``)."""
+    if getattr(verifier, "binds_params", False):
+        return verifier.verify(pcactn, verb=verb, resource=resource, audience=audience, params=params)
+    return verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
+
+
+def record_output(verifier: Any, source: Optional[str], output: Any) -> None:
+    """Provenance by default: record an allowed tool's result in the verifier's recorder (when it has one) as UNTRUSTED tool
+    output, so a later sensitive call whose choice or arguments come from it escalates."""
+    rec = getattr(verifier, "recorder", None)
+    if rec is not None:
+        rec.tool(source or "tool", output)

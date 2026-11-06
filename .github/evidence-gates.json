@@ -1,0 +1,56 @@
+{
+  "about": "Gates the release evidence report looks up for a release of this repository (release-evidence.mjs). A gate is decided by the newest completed run at the release commit, else on the release-candidate branches. Gates in Atlas-Authorization/pca are looked up at that repository's tag of the same version.",
+  "release": "atlas-pca and the Python framework adapters (PyPI)",
+  "rc_branches": [
+    "ci/{version}-rc",
+    "ci/{version}-rc-fix"
+  ],
+  "gates": [
+    {
+      "id": "ci",
+      "label": "CI: verifier on Linux / macOS / Windows, dependency-free verifier, build, adapters",
+      "workflow": "ci.yml",
+      "required": true,
+      "jobs": true
+    },
+    {
+      "id": "mutation",
+      "label": "Mutation testing (mutmut) merge",
+      "workflow": "mutation.yml",
+      "required": true,
+      "job": "merge",
+      "artifacts": [
+        {
+          "name": "mutation-summary",
+          "file": "mutation-summary.json",
+          "kind": "mutation"
+        }
+      ]
+    },
+    {
+      "id": "cross-language",
+      "label": "Cross-language gate (this verifier against the other 8)",
+      "repo": "Atlas-Authorization/pca",
+      "workflow": "cross-language.yml",
+      "required": true,
+      "jobs": true,
+      "artifacts": [
+        {
+          "name": "cross-language-matrix-Linux",
+          "file": "report.json",
+          "kind": "cross-language"
+        }
+      ]
+    },
+    {
+      "id": "formal-conformance",
+      "label": "Model-to-code conformance (full)",
+      "repo": "Atlas-Authorization/pca",
+      "workflow": "formal-conformance.yml",
+      "required": false
+    }
+  ],
+  "known_exceptions": [
+    "The atlas-pca HTTP middleware (require_pca, FastAPI, Django) and the seven framework adapters check the proof only: caveats, replay and revocation are not evaluated by them (https://github.com/Atlas-Authorization/pca/blob/main/docs/maturity.md)."
+  ]
+}

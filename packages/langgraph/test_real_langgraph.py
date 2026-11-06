@@ -31,7 +31,7 @@ CALLS: List[str] = []
 
 
 def _make_tool(require: str = REQUIRE, audience: str = AUD) -> Any:
-    @pca_tool(require, audience=audience, resolve_grant=resolver, now=NOW)
+    @pca_tool(require, audience=audience, resolve_grant=resolver, now=NOW, signature_only=True)
     @tool
     def place_order(sku: str, qty: int = 1) -> str:
         """Place an order."""
@@ -121,7 +121,7 @@ def test_pca_tool_node_in_real_graph_state_channel() -> None:
         return "ordered %s" % sku
 
     node = guard_tool_node(ToolNode([place_order]), audience=AUD, require={"place_order": REQUIRE},
-                           resolve_grant=resolver, now=NOW)
+                           resolve_grant=resolver, now=NOW, signature_only=True)
     g = StateGraph(dict)  # type: ignore[type-var]
     g.add_node("tools", node)
     g.add_edge(START, "tools")
@@ -188,3 +188,56 @@ def test_guard_node_interrupts_then_rejects_bad_resume_and_accepts_good() -> Non
     out = graph.invoke(Command(resume=PCACTN), cfg2)
     assert out["messages"][-1].content == "ordered D4"
     assert CALLS == ["D4"]
+
+
+# ---- opt-in authorize (atlas-pca 0.5) against the real framework -------------------------------------------------------
+
+def _az_fixtures() -> Any:
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "testdata",
+                         "authorize-fixtures.json")
+    with open(path, encoding="utf-8") as fh:
+        fx = _json.load(fh)
+    proofs = {c["name"]: c["steps"][0]["pcactn"] for c in fx["cases"]}
+    grants = {c["grant"]["id"]: c["grant"] for c in fx["cases"]}
+    return fx["now"], fx["audience"], grants, proofs["envelope-max-spend-within"], proofs["envelope-max-spend-400-refused"]
+
+
+AZ_NOW, AZ_AUD, AZ_GRANTS, AZ_P50, AZ_P400 = _az_fixtures()
+AZ_SEND = "payments.send:payments/acme"
+
+
+def _az_opts() -> Any:
+    from atlas_pca import AuthorizeOptions, MemoryStateStore
+    from prov_harness import PIN
+
+    # provenance by default stays on: the harness mediator is pinned and each call presents its principal-direct bundle
+    return AuthorizeOptions(state_store=MemoryStateStore(), is_revoked=lambda p, g: False, provenance_mediators=[PIN])
+
+
+def test_real_authorize_refuses_400_and_replay() -> None:
+    ran: List[str] = []
+
+    @tool
+    def send_payment(amount: int, currency: str) -> str:
+        """Send a payment."""
+        ran.append("%d %s" % (amount, currency))
+        return "sent %d" % amount
+
+    from atlas_pca_langgraph import PcaToolDenied
+
+    from prov_harness import bundle_for
+
+    t = pca_tool(AZ_SEND, audience=AZ_AUD, resolve_grant=AZ_GRANTS.get, now=AZ_NOW, authorize=_az_opts(),
+                 provenance=bundle_for)(send_payment)
+    assert isinstance(t, StructuredTool)
+    cfg = lambda p: {"configurable": {"PCA-Action": p}}  # noqa: E731
+    with pytest.raises(PcaToolDenied) as ei:
+        t.invoke({"amount": 400, "currency": "usd"}, config=cfg(AZ_P400))
+    assert ei.value.decision.reason == "policy: caveat(s) not satisfied: max_spend"
+    assert t.invoke({"amount": 50, "currency": "usd"}, config=cfg(AZ_P50)) == "sent 50"
+    with pytest.raises(PcaToolDenied):
+        t.invoke({"amount": 50, "currency": "usd"}, config=cfg(AZ_P50))  # replay
+    assert ran == ["50 usd"]

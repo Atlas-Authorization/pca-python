@@ -9,7 +9,7 @@ from .capability import (  # noqa: F401
     capability_satisfies,
     parse_capability,
 )
-from .extract import PCA_KEY, extract_pcactn  # noqa: F401
+from .extract import PCA_KEY, PROV_KEY, extract_pcactn, provenance_from_deps  # noqa: F401
 from .guard import (  # noqa: F401
     PCADecision,
     PCADeps,
@@ -28,9 +28,11 @@ __all__ = [
     "PCAGuard",
     "PCARejected",
     "PCA_KEY",
+    "PROV_KEY",
     "Verifier",
     "capability_satisfies",
     "extract_pcactn",
     "parse_capability",
     "pca_tool",
+    "provenance_from_deps",
 ]
