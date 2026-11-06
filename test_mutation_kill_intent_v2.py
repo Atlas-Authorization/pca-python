@@ -195,7 +195,7 @@ def _ctx(**over):
 
 
 CORE_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-           "plan_inclusion": True, "leaf_signature": True, "counter": True}
+           "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 V2_OK = dict(CORE_OK, intent=True, schema=True, intent_session=True, accumulators=True)
 
 
@@ -1470,22 +1470,22 @@ def _header(p):
 
 def test_require_pca_intent_v2_dict_and_callable():
     hdr = {"PCA-Action": _header(P0)}
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=_ctx())
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=_ctx(), signature_only=True)
     r = g(hdr)
     assert (r.ok, r.status, r.verdict.checks) == (True, 200, V2_OK)
     calls = []
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: calls.append(p) or _ctx())
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: calls.append(p) or _ctx(), signature_only=True)
     assert g(hdr).ok is True and calls == [P0]
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: None)
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: None, signature_only=True)
     r = g(hdr)
     assert (r.ok, r.status) == (False, 403) and r.verdict.checks["schema"] is False
 
     def boom(p):
         raise KeyError("store down")
-    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=boom)(hdr)
+    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=boom, signature_only=True)(hdr)
     assert (r.ok, r.status, r.error, r.verdict) == (False, 403, "intent_v2_context_error", None)
     # without intent_v2 the member is still verified (and the v2 checks fail closed for want of state)
-    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW)(hdr)
+    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, signature_only=True)(hdr)
     assert r.status == 403 and r.verdict.checks["intent_session"] is False
 
 

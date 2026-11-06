@@ -100,4 +100,35 @@ def verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
         return False
 
 
+def _encode(P):
+    zi = _inv(P[2])
+    x, y = P[0] * zi % _p, P[1] * zi % _p
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _expand(seed):
+    h = hashlib.sha512(seed).digest()
+    return (int.from_bytes(h[:32], "little") & ((1 << 254) - 8)) | (1 << 254), h[32:]
+
+
+def public_key(seed: bytes) -> bytes:
+    """The Ed25519 public key of a 32-byte seed (RFC 8032). Pure Python, NOT constant time."""
+    if len(seed) != 32:
+        raise ValueError("an Ed25519 seed is 32 bytes")
+    return _encode(_mul(_expand(seed)[0], _G))
+
+
+def sign(seed: bytes, msg: bytes) -> bytes:
+    """RFC 8032 Ed25519 signature of `msg` under a 32-byte seed. Pure Python, NOT constant time: it is the fallback for the
+    step-up device key when the optional `cryptography` package is not installed."""
+    if len(seed) != 32:
+        raise ValueError("an Ed25519 seed is 32 bytes")
+    a, prefix = _expand(seed)
+    pub = _encode(_mul(a, _G))
+    r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % _q
+    R = _encode(_mul(r, _G))
+    h = int.from_bytes(hashlib.sha512(R + pub + msg).digest(), "little") % _q
+    return R + ((r + h * a) % _q).to_bytes(32, "little")
+
+
 BACKEND = "pure-python-strict"
