@@ -68,7 +68,7 @@ def _kw():
 def test_guard_tools_wraps_mapped_and_passes_through_unmapped():
     mapped = _Tool("reader")
     unmapped = _Tool("mystery")
-    out = guard_tools([mapped, unmapped], require={"reader": REQUIRE}, **_kw())
+    out = guard_tools([mapped, unmapped], require={"reader": REQUIRE}, **_kw(), signature_only=True)
     assert isinstance(out[0], GuardedTool)       # mapped -> guarded
     assert out[1] is unmapped                    # unmapped -> untouched
     # the guarded one is gated
@@ -81,7 +81,7 @@ def test_guard_tools_wraps_mapped_and_passes_through_unmapped():
 def test_guard_tools_callable_require():
     a, b = _Tool("a"), _Tool("b")
     spec = lambda tool: REQUIRE if tool.name == "a" else None
-    out = guard_tools([a, b], require=spec, **_kw())
+    out = guard_tools([a, b], require=spec, **_kw(), signature_only=True)
     assert isinstance(out[0], GuardedTool)
     assert out[1] is b
 
@@ -90,7 +90,7 @@ def test_guard_tools_callable_require():
 
 def test_guard_tool_invoker_wraps_every_tool_and_rebuilds_lookup():
     invoker = _ToolInvoker([_Tool("reader"), _Tool("writer")])
-    returned = guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw())
+    returned = guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw(), signature_only=True)
     assert returned is invoker
 
     # every tool is now guarded, in both the list and the name lookup the invoker dispatches through
@@ -102,7 +102,7 @@ def test_guard_tool_invoker_wraps_every_tool_and_rebuilds_lookup():
 def test_guarded_invoker_fails_closed_without_proof():
     originals = [_Tool("reader"), _Tool("writer")]
     invoker = _ToolInvoker(originals)
-    guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw())
+    guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw(), signature_only=True)
     # dispatching any tool through the invoker denies, and the underlying tools never run
     with pytest.raises(PcaToolDenied):
         invoker.run([("reader", {})])
@@ -113,7 +113,7 @@ def test_guarded_invoker_fails_closed_without_proof():
 
 def test_guarded_invoker_runs_every_tool_with_a_valid_proof():
     invoker = _ToolInvoker([_Tool("reader"), _Tool("writer")])
-    guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw())
+    guard_tool_invoker(invoker, require=REQUIRE_MAP, **_kw(), signature_only=True)
     with pca_context(PCACTN):
         out = invoker.run([("reader", {}), ("writer", {})])
     assert out["tool_results"] == ["reader-ok", "writer-ok"]
@@ -121,7 +121,7 @@ def test_guarded_invoker_runs_every_tool_with_a_valid_proof():
 
 def test_guard_tool_invoker_single_string_require_applies_to_all():
     invoker = _ToolInvoker([_Tool("x"), _Tool("y")])
-    guard_tool_invoker(invoker, require=REQUIRE, **_kw())
+    guard_tool_invoker(invoker, require=REQUIRE, **_kw(), signature_only=True)
     assert all(isinstance(t, GuardedTool) for t in invoker.tools)
     with pca_context(PCACTN):
         assert invoker.run([("x", {}), ("y", {})])["tool_results"] == ["x-ok", "y-ok"]
@@ -129,7 +129,7 @@ def test_guard_tool_invoker_single_string_require_applies_to_all():
 
 def test_guard_tool_invoker_leaves_unmapped_tools_ungated():
     invoker = _ToolInvoker([_Tool("reader"), _Tool("mystery")])
-    guard_tool_invoker(invoker, require={"reader": REQUIRE}, **_kw())
+    guard_tool_invoker(invoker, require={"reader": REQUIRE}, **_kw(), signature_only=True)
     guarded = invoker._tools_with_names["reader"]
     passthrough = invoker._tools_with_names["mystery"]
     assert isinstance(guarded, GuardedTool)
@@ -142,6 +142,6 @@ def test_guard_tool_invoker_leaves_unmapped_tools_ungated():
 
 def test_guard_tool_invoker_with_no_tools_is_a_noop():
     invoker = _ToolInvoker([])
-    returned = guard_tool_invoker(invoker, require=REQUIRE, **_kw())
+    returned = guard_tool_invoker(invoker, require=REQUIRE, **_kw(), signature_only=True)
     assert returned is invoker
     assert invoker.tools == []

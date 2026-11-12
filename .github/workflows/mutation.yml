@@ -42,12 +42,54 @@ env:
   SHARDS: '50'
 
 jobs:
+  # mutmut's stats (which tests reach which function, each test's duration) once for all shards: a shard loads them instead
+  # of a traced run of the whole suite. The shards must run the same code and config (same commit, mutmut-prepare.sh).
+  stats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Full adversarial corpus (oracle) from the flagship
+        env:
+          LESS: '1'
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - name: Install
+        run: python -m pip install "mutmut==3.8.1" pytest cryptography dilithium-py fastapi httpx django
+      - name: Collect stats
+        run: |
+          bash .github/scripts/mutmut-prepare.sh
+          # every function, `if` test, raise, bare call, continue and break has a mutant (with a built-in negative control)
+          python .github/scripts/mutmut-site-check.py
+          # `mutmut run` of no mutant: it collects (and saves) the stats, then would run the clean suite: stop it there
+          mutmut run '__pca_no_such_mutant__' > "$RUNNER_TEMP/stats.log" 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null && ! grep -q "Running clean tests" "$RUNNER_TEMP/stats.log"; do sleep 10; done
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          tr '\r' '\n' < "$RUNNER_TEMP/stats.log" | grep -v "^\s*$" | tail -20
+          python -c 'import json; d = json.load(open("mutants/mutmut-stats.json")); assert d["tests_by_mangled_function_name"] and d["duration_by_test"]; print(len(d["duration_by_test"]), "tests,", len(d["tests_by_mangled_function_name"]), "functions")'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutmut-stats
+          path: mutants/mutmut-stats.json
+          retention-days: 7
   shard:
+    needs: stats
     name: shard ${{ matrix.shard }}/50
     runs-on: ubuntu-latest
     timeout-minutes: 345
+    env:
+      PYTHONHASHSEED: '0'  # test_k05_pinned.py: set order must be the same in CI and in the mutation job
     strategy:
       fail-fast: false
+      max-parallel: 64 # Enterprise plan: 500 concurrent jobs org-wide; 9 lanes x 64 stays under it with room for CI and merge jobs
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
                 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
@@ -60,9 +102,13 @@ jobs:
         with:
           node-version: 22
       - name: Full adversarial corpus (oracle) from the flagship
+        # LESS=1: build libatlas_less + export ATLAS_PCA_LIBLESS like the CI verifier (--less), so supported_suites() and the
+        # LESS paths behave as where the pins were recorded (run 41911045415 failed the stats run on fuzz:pca.supported_suites)
+        env:
+          LESS: '1'
         run: .github/scripts/mutation-layout.sh "$CRATE"
       - name: Install
-        run: python -m pip install "mutmut>=3,<4" pytest cryptography dilithium-py fastapi httpx django
+        run: python -m pip install "mutmut==3.8.1" pytest cryptography dilithium-py fastapi httpx django
       - name: Baseline results (targeted mode)
         if: ${{ !inputs.full }}
         env:
@@ -84,15 +130,28 @@ jobs:
             fi
           done
           echo "::notice::shard $SHARD: no baseline results found, full run (seeds the next run)"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutmut-stats
+          path: ${{ runner.temp }}/mutmut-stats
+      # test_k05d_py310.py: the mutants that drop an int.to_bytes/from_bytes byteorder are no-ops on 3.11+ but raise TypeError on the
+      # supported 3.9/3.10, so each is killed by re-running its known-answer tests under this interpreter (update-environment: false
+      # keeps 3.12 the default python)
+      - uses: actions/setup-python@v5
+        id: py310
+        with:
+          python-version: '3.10'
+          update-environment: false
+      - name: Python 3.10 for the byteorder kill tests
+        run: |
+          # the package's optional dependencies (pyproject: fast/pq/attest/sigstore/fastapi/django), the test dependencies the 3.10 CI cell
+          # installs, and mutmut itself (requires-python >= 3.10; the mutated modules import its trampoline)
+          "${{ steps.py310.outputs.python-path }}" -m pip install --quiet "mutmut==3.8.1" "cryptography>=41" "dilithium-py>=1.0" "fastapi>=0.110" "django>=4.2" pytest httpx
+          echo "PCA_PY310=${{ steps.py310.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: Mutate
         run: |
-          # mutmut runs the tests from mutants/: the corpus they read sits next to them
-          python - <<'PY'
-          import re
-          s = open("setup.cfg").read()
-          s = re.sub(r"(also_copy=\n)", r"\1    conformance\n", s, count=1)
-          open("setup.cfg", "w").write(s)
-          PY
+          # setup.cfg also_copy + the mutants (the stats job ran the same script: same config fingerprint)
+          bash .github/scripts/mutmut-prepare.sh
           # shard k = mutant numbers n with n % 50 == k - 1: the names ending in the two digits a = k-1 or b = k+49 (zero
           # padded), plus the bare one-digit name __mutmut_<k-1> (n < 10 has no second digit)
           k=$(( ${{ matrix.shard }} - 1 ))
@@ -114,14 +173,21 @@ jobs:
           fi
           # 2 children: each loads the adversarial corpus (4 exhausted 12 GB on the build boxes; 3 exhausted this 16 GB runner)
           (while sleep 120; do free -m | awk 'NR==2 { print "memory used MB:", $3, "of", $2 }'; tail -c 300 "$RUNNER_TEMP/run.log" | tr '\r' '\n' | tail -1; done) &
-          # a mutant that allocates without bound must die alone (killed), not exhaust the runner
-          ulimit -v 6291456
+          # the stats the stats job collected once for every shard (a traced run of the whole suite, ~70 min per shard before)
+          cp "$RUNNER_TEMP/mutmut-stats/mutmut-stats.json" mutants/mutmut-stats.json
+          # a mutant that allocates without bound must die alone (a run error, see PCA_RUNERR_DIR), not exhaust the runner: conftest.py caps each
+          # mutant's own process (PCA_MUTANT_AS_HEADROOM_MB above its forked size). A shell `ulimit -v` here also capped the
+          # in-process clean test run, which then could not start 16 threads (RuntimeError: can't start new thread)
+          export PCA_MUTANT_AS_HEADROOM_MB=3072
+          # evidence per mutant (conftest.py): which test decided it, or that it only crashed (run error, not a kill)
+          export PCA_RUNERR_DIR="$RUNNER_TEMP/runerr"; mkdir -p "$PCA_RUNERR_DIR"; echo "PCA_RUNERR_DIR=$PCA_RUNERR_DIR" >> "$GITHUB_ENV"
           timeout --signal=INT --kill-after=120 330m mutmut run --max-children 2 "${globs[@]}" > "$RUNNER_TEMP/run.log" 2>&1 || {
             rc=$?
             # the WHY first (a failing baseline test prints its assertion far above the 3000-byte tail)
             tr '\r' '\n' < "$RUNNER_TEMP/run.log" | grep -E -m 60 -A 12 '^(FAILED|ERROR) |^E  |Error:|Traceback' || true
             tail -c 3000 "$RUNNER_TEMP/run.log"; echo "::error::mutmut run exited $rc"; exit 1; }
           tail -c 600 "$RUNNER_TEMP/run.log" | tr '\r' '\n' | tail -3
+          if grep -q "Running stats" "$RUNNER_TEMP/run.log"; then echo "::warning::the shard re-collected the stats (config or code differs from the stats job)"; fi
       - name: Report
         run: |
           if [ -n "${CARRY_ONLY:-}" ]; then python .github/scripts/mutmut-carry.py carry-only "$BASE"
@@ -133,10 +199,17 @@ jobs:
           cp results.json "$RUNNER_TEMP/mut-results/results.json"
           python .github/scripts/mutmut-carry.py fnhash > "$RUNNER_TEMP/mut-results/fnhash.json"
           python -c 'import json, importlib.metadata as m; print(json.dumps({"mutmut": m.version("mutmut")}))' > "$RUNNER_TEMP/mut-results/meta.json"
+          cp run-errors.json run-errors-${{ matrix.shard }}.json
+          if [ -f killed-equivalents.json ]; then cp killed-equivalents.json killed-equivalents-${{ matrix.shard }}.json; else echo '[]' > killed-equivalents-${{ matrix.shard }}.json; fi
+          # which test decided each killed mutant (conftest.py .decided records): a mutant that flips between runs names its test
+          grep -H . "$PCA_RUNERR_DIR"/*.decided > "$RUNNER_TEMP/mut-results/decided.tsv" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.shard }}
-          path: shard-${{ matrix.shard }}.json
+          path: |
+            shard-${{ matrix.shard }}.json
+            run-errors-${{ matrix.shard }}.json
+            killed-equivalents-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
           name: mut-results-${{ matrix.shard }}
@@ -160,12 +233,51 @@ jobs:
           path: reports
           pattern: shard-*
       - name: Merge shards and check the ledger
-        run: >
-          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports
-          --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE"
+        # a ledgered equivalent that a test KILLED this run is a notice (nondeterministic killer), not a stale entry: stale-killed.mjs
+        run: |
+          rc=0
+          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports \
+            --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE" > "$RUNNER_TEMP/merge.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/merge.log"
+          node .github/scripts/stale-killed.mjs "$RUNNER_TEMP/merge.log" reports "$rc"
+      # gate honesty: a mutant mutmut counts as killed / segfault / suspicious though no test assertion decided it (MemoryError
+      # or RecursionError under the per-mutant memory cap, a signal death, a pytest internal error) is a RUN ERROR, not a
+      # kill. Each must be in mutation-run-errors.json with a per-mutant reason (what the mutant does to cause it); an
+      # unlisted one, a stale entry or a missing shard list fails.
+      - name: Run errors (crash / signal / no test decided) are each proven mutant-caused
+        if: ${{ !cancelled() }}
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const got = []; let shards = 0;
+            const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/^run-errors-\d+\.json$/.test(e.name)) { shards++; got.push(...JSON.parse(fs.readFileSync(p, "utf8"))); } } };
+            walk("reports");
+            const want = Number(process.env.SHARDS);
+            if (shards !== want) { console.error(`::error::run-error lists from ${shards}/${want} shards (a missing list is a failure)`); process.exit(1); }
+            const led = JSON.parse(fs.readFileSync("mutation-run-errors.json", "utf8"));
+            const key = (m) => [m.file, m.fn, m.line, m.occurrence ?? "", m.mutant].join(" | ");
+            const have = new Map(); for (const m of got) have.set(key(m), (have.get(key(m)) || 0) + 1);
+            let bad = 0; const used = new Set();
+            for (const e of led) {
+              if (!e.reason || !e.reason.trim()) { console.error("::error::run-error ledger entry without a reason: " + key(e)); bad++; }
+              const n = have.get(key(e)) || 0, k = e.multiplicity || 1;
+              if (n !== k) { console.error(`::error::run-error ledger entry covers ${k}, the run has ${n} (stale?): ${key(e)}`); bad++; }
+              used.add(key(e));
+            }
+            for (const m of got) if (!used.has(key(m))) { console.error(`::error::UNPROVEN run error, no test decided it (${m.evidence}): ${key(m)}`); bad++; used.add(key(m)); }
+            console.log(`${got.length} run-error mutant(s) over ${shards} shards, ${led.length} ledger entries, ${bad} problem(s)`);
+            process.exit(bad ? 1 : 0);
+          '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: survivors-merged
           path: reports/survivors-merged.json
+          if-no-files-found: ignore
+      - name: Merge result for the release evidence report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-summary
+          path: reports/mutation-summary.json
           if-no-files-found: ignore

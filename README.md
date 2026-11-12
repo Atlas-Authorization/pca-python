@@ -1,5 +1,7 @@
 # pca-python
 
+> Maturity: **stable** (stable core). See [maturity tiers](https://github.com/Atlas-Authorization/pca/blob/main/docs/maturity.md).
+
 **The Python implementation of Proof-Carrying Authority (PCA) — an execution-authentication
 framework for autonomous agents.**
 

@@ -101,3 +101,21 @@ def extract_pcactn(
         return _coerce(arg_map[key])
 
     return None, "absent"
+
+
+PROV_KEY = "PCA-Provenance"
+
+
+def provenance_from_deps(deps: object, *, key: str = PROV_KEY) -> Optional[Dict[str, Any]]:
+    """The provenance bundle the host put on ``RunContext.deps`` for this run (provenance by default): ``deps.pca_provenance``
+    or, for a plain mapping, ``deps["PCA-Provenance"]``; the bundle object or its base64url JSON. Never read from the
+    model-controlled tool arguments. ``None`` when absent or undecodable (the call is then unlabelled: a sensitive tool
+    escalates)."""
+    if deps is None:
+        return None
+    value: object = getattr(deps, "pca_provenance", _MISSING)
+    if value is _MISSING and isinstance(deps, Mapping):
+        value = deps.get(key, _MISSING)
+    if value is _MISSING or value is None:
+        return None
+    return _coerce(value)[0]

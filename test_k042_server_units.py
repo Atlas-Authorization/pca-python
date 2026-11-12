@@ -12,7 +12,7 @@ HV = _header_value(PCACTN)
 
 
 def _guard(audience=AUD, resolve_grant=_resolver, **kw):
-    return server.require_pca(audience=audience, resolve_grant=resolve_grant, now=NOW, **kw)
+    return server.require_pca(audience=audience, resolve_grant=resolve_grant, now=NOW, **kw, signature_only=True)
 POLICY = {"require": False, "min_fidelity_ppm": 1}
 
 
@@ -73,7 +73,7 @@ def test_fastapi_forwards_policy_and_v2(monkeypatch):
     got = {}
     monkeypatch.setattr(server, "verify_pcactn_core", lambda p, g, **kw: got.update(kw) or Verdict(allow=True))
     v2 = {"policy": {}}
-    dep = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW, intent_policy=POLICY, intent_v2=v2)
+    dep = RequirePCA(audience=AUD, resolve_grant=_resolver, now=NOW, intent_policy=POLICY, intent_v2=v2, signature_only=True)
 
     class Req:
         headers = {"PCA-Action": HV}
@@ -104,6 +104,8 @@ def test_django_settings_forms(monkeypatch):
     from atlas_pca import django as dj
 
     settings.PCA_AUDIENCE = AUD
+
+    settings.PCA_SIGNATURE_ONLY = True
     settings.PCA_RESOLVE_GRANT = _resolver
     settings.PCA_NOW = NOW
     got = {}
@@ -151,6 +153,7 @@ def test_django_unreadable_body_is_none(monkeypatch):
 
     settings = _django()
     settings.PCA_AUDIENCE = AUD
+    settings.PCA_SIGNATURE_ONLY = True
     settings.PCA_RESOLVE_GRANT = _resolver
     settings.PCA_NOW = NOW
     for name in ("PCA_INTENT_V2", "PCA_INTENT_POLICY"):

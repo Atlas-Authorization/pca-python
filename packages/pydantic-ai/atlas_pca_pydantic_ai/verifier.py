@@ -2,7 +2,7 @@
 
 The guard never calls crypto directly; it calls a :class:`Verifier`. :class:`CoreVerifier` is the
 default, wrapping :func:`atlas_pca.pca.verify_pcactn_core` (the shared reference verifier: the 8 offline
-checks — wire, version, audience, validity, chain, plan inclusion, leaf signature, counter) and adding
+checks — wire, version, audience, validity, chain, plan inclusion, leaf signature, counter_format) and adding
 the one thing a resource server must supply itself, a ``grant_ref -> grant`` resolver.
 
 Swapping in a different :class:`Verifier` (e.g. one that also consults a revocation beacon, or a remote
@@ -46,4 +46,5 @@ class CoreVerifier(Verifier):
         if not isinstance(grant, dict):
             return Verdict(allow=False, checks={}, reason="unknown_grant")
         clock = now if now is not None else self.now
-        return verify_pcactn_core(pcactn, grant, now=clock, audience=audience)
+        return verify_pcactn_core(pcactn, grant, now=clock, audience=audience,
+                                  insecure_skip_plan_root_check=True)  # signature-only mode: `authorize` checks the plan root

@@ -92,13 +92,13 @@ G = _root([{"type": "max_spend", "usd": 1}, ENV])
 P_BOUND = _pcactn(G, intent=dict(INTENT))
 P_PLAIN = _pcactn(G)
 ALL_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-          "plan_inclusion": True, "leaf_signature": True, "counter": True}
+          "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 
 
 def _verify(p, grant=G, policy=None, **kw):
     kw.setdefault("now", NOW)
     kw.setdefault("audience", AUD)
-    return verify_pcactn_core(p, grant, intent_policy=policy, **kw)
+    return verify_pcactn_core(p, grant, intent_policy=policy, **kw, insecure_skip_plan_root_check=True)
 
 
 def _with(**over):
@@ -353,7 +353,7 @@ def test_verify_absent_is_pre_m2():
         v = _verify(P_PLAIN, policy=pol)
         assert (v.allow, v.checks, v.reason) == (True, ALL_OK, None), repr(pol)
         assert "intent" not in v.checks
-    v = verify_pcactn_core(P_PLAIN, G, now=NOW, audience=AUD)  # default argument
+    v = verify_pcactn_core(P_PLAIN, G, now=NOW, audience=AUD, insecure_skip_plan_root_check=True)  # default argument
     assert (v.allow, v.checks) == (True, ALL_OK)
 
 

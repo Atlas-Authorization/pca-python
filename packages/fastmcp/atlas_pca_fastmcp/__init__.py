@@ -10,7 +10,7 @@ from .capability import (  # noqa: F401
     parse_capability,
     resolve_required,
 )
-from .extract import PCA_META_KEY, extract_pcactn  # noqa: F401
+from .extract import PCA_META_KEY, PROV_META_KEY, extract_pcactn, extract_provenance  # noqa: F401
 from .middleware import (  # noqa: F401
     PCAAccessDenied,
     PCADecision,
@@ -32,11 +32,13 @@ __all__ = [
     "PCADecision",
     "PCAMiddleware",
     "PCA_META_KEY",
+    "PROV_META_KEY",
     "PolicyHook",
     "ToolCapability",
     "Verifier",
     "capability_satisfies",
     "extract_pcactn",
+    "extract_provenance",
     "parse_capability",
     "pca_guard",
     "pca_tool",
