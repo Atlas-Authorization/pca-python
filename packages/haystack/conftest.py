@@ -12,6 +12,11 @@ _PYTHON_PCA = os.path.normpath(os.path.join(_HERE, "..", ".."))
 if _PYTHON_PCA not in sys.path:
     sys.path.insert(0, _PYTHON_PCA)
 
+# The tests sign with throwaway keys; without the `cryptography` package that is the built-in (not constant-time) signer.
+from atlas_pca import ed25519 as _ed25519  # noqa: E402
+
+_ed25519.allow_insecure_signer()
+
 
 import pytest  # noqa: E402
 

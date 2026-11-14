@@ -39,7 +39,7 @@ def _with_intent(intent):
 
 
 def _verify(p, policy=None):
-    return verify_pcactn_core(p, GRANT, now=NOW, audience=AUD, intent_policy=policy)
+    return verify_pcactn_core(p, GRANT, now=NOW, audience=AUD, intent_policy=policy, insecure_skip_plan_root_check=True)
 
 
 class IntentWire(unittest.TestCase):

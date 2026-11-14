@@ -45,11 +45,15 @@ def _require_for(tool: Any, require: RequireSpec) -> Optional[str]:
 
 def guard_tools(tools: List[Any], *, audience: str, require: RequireSpec,
                 verifier: Optional[Verifier] = None, resolve_grant: Optional[GrantResolver] = None,
-                now: Optional[int] = None) -> List[Any]:
+                now: Optional[int] = None, authorize: Any = None, signature_only: bool = False,
+                provenance: Optional[Callable[[Dict[str, Any]], Any]] = None, recorder: Any = None) -> List[Any]:
     """Return a new list where every tool with a resolved ``require`` is wrapped by :func:`pca_tool`.
 
-    Tools whose ``require`` resolves to ``None`` are passed through unchanged.
+    Tools whose ``require`` resolves to ``None`` are passed through unchanged. ``authorize``, ``signature_only``,
+    ``provenance`` and ``recorder`` are forwarded to :func:`pca_tool` (the default is the full authorize pipeline).
     """
+    az = {"signature_only": signature_only, "provenance": provenance, "recorder": recorder,
+          **({"authorize": authorize} if authorize is not None else {})}
     guarded: List[Any] = []
     for tool in tools:
         req = _require_for(tool, require)
@@ -57,7 +61,7 @@ def guard_tools(tools: List[Any], *, audience: str, require: RequireSpec,
             guarded.append(tool)
             continue
         guarded.append(
-            pca_tool(req, audience=audience, verifier=verifier, resolve_grant=resolve_grant, now=now)(tool)
+            pca_tool(req, audience=audience, verifier=verifier, resolve_grant=resolve_grant, now=now, **az)(tool)
         )
     return guarded
 
@@ -65,8 +69,10 @@ def guard_tools(tools: List[Any], *, audience: str, require: RequireSpec,
 def guard_tool_invoker(invoker: Any, *, audience: str, require: RequireSpec,
                        verifier: Optional[Verifier] = None,
                        resolve_grant: Optional[GrantResolver] = None,
-                       now: Optional[int] = None) -> Any:
-    """Guard every tool a ``ToolInvoker`` can call, replacing its tool list in place.
+                       now: Optional[int] = None, authorize: Any = None, signature_only: bool = False,
+                       provenance: Optional[Callable[[Dict[str, Any]], Any]] = None, recorder: Any = None) -> Any:
+    """Guard every tool a ``ToolInvoker`` can call, replacing its tool list in place (``authorize``, ``provenance``,
+    ``recorder``: see :func:`pca_tool`).
 
     Call it once before the invoker runs (``guard_tool_invoker(invoker, ...)``); returns the same
     ``invoker`` for chaining. The invoker's ``tools`` are swapped for guarded equivalents and its
@@ -76,7 +82,9 @@ def guard_tool_invoker(invoker: Any, *, audience: str, require: RequireSpec,
     tools = getattr(invoker, "tools", None)
     if tools:
         guarded = guard_tools(list(tools), audience=audience, require=require,
-                              verifier=verifier, resolve_grant=resolve_grant, now=now)
+                              verifier=verifier, resolve_grant=resolve_grant, now=now,
+                              signature_only=signature_only, provenance=provenance, recorder=recorder,
+                              **({"authorize": authorize} if authorize is not None else {}))
         invoker.tools = guarded
         if isinstance(getattr(invoker, "_tools_with_names", None), dict):
             rebuilt: Dict[str, Any] = {}

@@ -93,7 +93,7 @@ def _pcactn(chain, leaf_k, iat=NOW - 1000, exp=NOW + 600_000, **extra):
 ROOT = _cap(PRINCIPAL, _pub(AGENT), CAVEATS)
 P0 = _pcactn([ROOT], AGENT)
 ALL_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-          "plan_inclusion": True, "leaf_signature": True, "counter": True}
+          "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 
 
 class Hostile(Exception):
@@ -103,7 +103,7 @@ class Hostile(Exception):
 def _verify(p, grant=ROOT, **kw):
     kw.setdefault("now", NOW)
     kw.setdefault("audience", AUD)
-    return verify_pcactn_core(p, grant, **kw)
+    return verify_pcactn_core(p, grant, **kw, insecure_skip_plan_root_check=True)
 
 
 def test_baseline_self_minted_pcactn_allows():
@@ -118,10 +118,10 @@ def test_baseline_self_minted_pcactn_allows():
 def test_now_defaults_to_wall_clock_ms():
     t = int(time.time() * 1000)
     p = _pcactn([ROOT], AGENT, iat=t - 5000, exp=t + 600_000)
-    v = verify_pcactn_core(p, ROOT, audience=AUD)  # now=None -> wall clock, in MILLISECONDS
+    v = verify_pcactn_core(p, ROOT, audience=AUD, insecure_skip_plan_root_check=True)  # now=None -> wall clock, in MILLISECONDS
     assert (v.allow, v.checks, v.reason) == (True, ALL_OK, None)
     stale = _pcactn([ROOT], AGENT, iat=t - 900_000, exp=t - 300_000)
-    v = verify_pcactn_core(stale, ROOT, audience=AUD)
+    v = verify_pcactn_core(stale, ROOT, audience=AUD, insecure_skip_plan_root_check=True)
     assert v.allow is False and v.reason == "validity: the PCActn has expired"
 
 
@@ -130,7 +130,7 @@ def test_outer_totality_verdict_is_exact():
         def __len__(self):
             raise Hostile()
 
-    v = verify_pcactn_core(HostileStr("{}"), ROOT, now=NOW, audience=AUD)
+    v = verify_pcactn_core(HostileStr("{}"), ROOT, now=NOW, audience=AUD, insecure_skip_plan_root_check=True)
     assert v.allow is False
     assert v.checks == {"wire": False}
     assert v.reason == "wire: malformed input (Hostile)"
@@ -141,7 +141,8 @@ def test_inner_malformed_reason_and_checks_exact():
     v = _verify(P0, grant={"x": float("nan")})
     assert v.allow is False
     assert v.checks == {"wire": True, "version": True, "audience": True, "validity": True, "chain": False,
-                        "plan_inclusion": False, "leaf_signature": False, "counter": False}
+                        "plan_inclusion": False, "leaf_signature": False, "counter_format": False,
+                        "malformed": False}  # the fault itself is a failed check (pcactn.ts:845)
     assert v.reason == "malformed PCActn: canonicalize: non-finite number"
     # an earlier failure keeps its reason (first failure wins)
     v = _verify(P0, grant={"x": float("nan")}, audience="someone-else")
