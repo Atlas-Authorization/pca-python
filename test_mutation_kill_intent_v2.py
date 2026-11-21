@@ -195,12 +195,12 @@ def _ctx(**over):
 
 
 CORE_OK = {"wire": True, "version": True, "audience": True, "validity": True, "chain": True, "grant_ref_bound": True,
-           "plan_inclusion": True, "leaf_signature": True, "counter": True}
+           "plan_inclusion": True, "leaf_signature": True, "counter_format": True}
 V2_OK = dict(CORE_OK, intent=True, schema=True, intent_session=True, accumulators=True)
 
 
 def _verify(p=P0, grant=G0, ctx="default"):
-    return verify_pcactn_core(p, grant, now=NOW, audience=AUD, intent_v2=_ctx() if ctx == "default" else ctx)
+    return verify_pcactn_core(p, grant, now=NOW, audience=AUD, intent_v2=_ctx() if ctx == "default" else ctx, insecure_skip_plan_root_check=True)
 
 
 def _decide(p=P0, grant=G0, ctx="default", now=NOW):
@@ -327,7 +327,7 @@ def test_wire_slot_digest_lists_and_prov():
 def test_wire_slot_is_part_of_validate_wire_v2():
     p = _signed(_unsigned(G0, intent_session=_is(seq=-1)))
     assert validate_wire_v2(p) == "'intent_session.seq' must be a safe integer in [0, 2147483647]"
-    v = verify_pcactn_core(p, G0, now=NOW, audience=AUD, intent_v2=_ctx())
+    v = verify_pcactn_core(p, G0, now=NOW, audience=AUD, intent_v2=_ctx(), insecure_skip_plan_root_check=True)
     assert (v.allow, v.checks) == (False, {"wire": False})
     assert v.reason == "wire: 'intent_session.seq' must be a safe integer in [0, 2147483647]"
     # the intent slot is checked before intent_session
@@ -393,7 +393,7 @@ def test_allow_g0_exact_checks():
 def test_allow_delta_d1_and_unheld():
     p1 = _pcactn(D1, intent=_intent(MAP1, "salt1"), intent_session=_is(seq=1, acc=[{"id": "trip_spend", "post": 77_800}]))
     ctx = _ctx(session={"root": S0, "grants": [G0]}, acc={"state": {"trip_spend": {"sum": 38_900}}, "monitors": {}})
-    v = verify_pcactn_core(p1, D1, now=NOW, audience=AUD, intent_v2=ctx)
+    v = verify_pcactn_core(p1, D1, now=NOW, audience=AUD, intent_v2=ctx, insecure_skip_plan_root_check=True)
     assert (v.allow, v.checks) == (True, V2_OK)
     ctx["session"] = {"root": S0, "grants": []}
     d = _decide(p1, D1, ctx)
@@ -421,7 +421,7 @@ def test_reporting_conditions():
         "malformed v2 context: layers.org must be {predicates: [...]}"
     assert _check(_decide(ctx=_ctx(layers={"team": {"predicates": []}})), "schema")["reason"] == \
         "malformed v2 context: layers: unknown member 'team'"
-    v = verify_pcactn_core(plain, G0, now=NOW, audience=AUD, intent_v2=_ctx(policy={"session": {"require": True}}))
+    v = verify_pcactn_core(plain, G0, now=NOW, audience=AUD, intent_v2=_ctx(policy={"session": {"require": True}}), insecure_skip_plan_root_check=True)
     assert v.checks == dict(CORE_OK, intent=False, intent_session=False) and v.allow is False
 
 
@@ -649,7 +649,7 @@ def test_policy_closed_and_typed():
             {"name": "schema", "ok": False, "reason": reason}, {"name": "intent_session", "ok": False, "reason": reason}], repr(pol)
         assert _decide(ctx=_ctx(policy=pol))["checks"] == [
             {"name": n, "ok": False, "reason": reason} for n in ("schema", "intent_session", "accumulators")], repr(pol)
-    v = verify_pcactn_core(plain, G0, now=NOW, audience=AUD, intent_v2=_ctx(policy={"session": {"max_revocation_age_s": "60"}}))
+    v = verify_pcactn_core(plain, G0, now=NOW, audience=AUD, intent_v2=_ctx(policy={"session": {"max_revocation_age_s": "60"}}), insecure_skip_plan_root_check=True)
     assert v.checks == dict(CORE_OK, intent=False, schema=False, intent_session=False)
     # the first malformed member (in key order) is the reason
     assert pol_err({"session": {"require": 1}, "schema": {"closed_world": 0}}) == \
@@ -1143,7 +1143,7 @@ def _c_seq(receipts, last=None, keys=None):
 
 def test_receipt_allow_and_reservation_digest():
     assert pcactn_reservation_digest(_p_seq(RC)) == RES  # sig and intent_session are excluded
-    v = verify_pcactn_core(_p_seq(RC), G_SEQ, now=NOW, audience=AUD, intent_v2=_c_seq([RC]))
+    v = verify_pcactn_core(_p_seq(RC), G_SEQ, now=NOW, audience=AUD, intent_v2=_c_seq([RC]), insecure_skip_plan_root_check=True)
     assert (v.allow, v.checks) == (True, V2_OK)
 
 
@@ -1470,22 +1470,22 @@ def _header(p):
 
 def test_require_pca_intent_v2_dict_and_callable():
     hdr = {"PCA-Action": _header(P0)}
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=_ctx())
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=_ctx(), signature_only=True)
     r = g(hdr)
     assert (r.ok, r.status, r.verdict.checks) == (True, 200, V2_OK)
     calls = []
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: calls.append(p) or _ctx())
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: calls.append(p) or _ctx(), signature_only=True)
     assert g(hdr).ok is True and calls == [P0]
-    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: None)
+    g = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=lambda p: None, signature_only=True)
     r = g(hdr)
     assert (r.ok, r.status) == (False, 403) and r.verdict.checks["schema"] is False
 
     def boom(p):
         raise KeyError("store down")
-    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=boom)(hdr)
+    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, intent_v2=boom, signature_only=True)(hdr)
     assert (r.ok, r.status, r.error, r.verdict) == (False, 403, "intent_v2_context_error", None)
     # without intent_v2 the member is still verified (and the v2 checks fail closed for want of state)
-    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW)(hdr)
+    r = require_pca(audience=AUD, resolve_grant=lambda ref: G0, now=NOW, signature_only=True)(hdr)
     assert r.status == 403 and r.verdict.checks["intent_session"] is False
 
 
@@ -1779,7 +1779,7 @@ def test_map_wire_goal_and_pipeline():
     assert decide_intent_binding(_intent(MC), GM, None, SESSION, "commit") == ("pass", None)
     assert decide_intent_binding(_intent(MC), GM, None, SESSION)[0] == "fail"
     assert decide_intent_binding(_intent(MAP0), G0, None, SESSION, "commit")[0] == "fail"
-    v = verify_pcactn_core(PM, GM, now=NOW, audience=AUD, intent_v2=_cm())
+    v = verify_pcactn_core(PM, GM, now=NOW, audience=AUD, intent_v2=_cm(), insecure_skip_plan_root_check=True)
     assert (v.allow, v.checks, v.reason) == (True, dict(V2_OK, map=True), None)
     d = _decide(PM, GM, _cm())
     assert _names(d) == ["schema", "intent_session", "accumulators", "map"]

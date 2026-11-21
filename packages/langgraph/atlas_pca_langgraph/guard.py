@@ -131,6 +131,10 @@ def pca_guard_node(*, audience: str, require: RequireSpec,
     ``route_key``      — the state key the routing marker is written under (read by :func:`pca_route`).
     ``stepup_prompt``  — the human-facing prompt carried in the ``interrupt`` payload.
 
+    This node is a routing pre-check (signature, audience, capability): it does not consume the replay counter, so
+    run the ``authorize`` pipeline on the node that executes the tools (``PcaToolNode`` / ``pca_tool``, which authorize
+    by default).
+
     The returned node takes ``(state[, config])`` and returns a state update. Wire it with a conditional
     edge::
 

@@ -144,7 +144,7 @@ def test_entry_points_total_on_very_deep_values():
         deep = [deep]
     assert verify_threshold_share({"role": "agent", "t": 1, "signer_set": deep, "threshold_message": "AA", "share": deep}) is False
     assert verify_threshold_share(deep) is False
-    v = verify_pcactn_core({"ver": 2, "x": deep}, ROOT, 0, "aud")
+    v = verify_pcactn_core({"ver": 2, "x": deep}, ROOT, 0, "aud", insecure_skip_plan_root_check=True)
     assert v.allow is False
     assert verify_chain([deep], None)[0] is False
 

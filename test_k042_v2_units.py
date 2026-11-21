@@ -124,7 +124,8 @@ def test_revocation_evidence_shape():
 
 
 def test_param_value_violation_requires_an_object_declaration():
-    for bad in ("x", 5, None, [], ["type"]):
-        with pytest.raises(TypeError) as e:
-            V.param_value_violation(bad, 1)
-        assert str(e.value) == "a parameter declaration must be an object"
+    with pytest.raises(TypeError) as e:  # `null.max_len` throws
+        V.param_value_violation(None, 1)
+    assert str(e.value) == "a parameter declaration must be an object"
+    for bad in ("x", 5, [], ["type"]):  # any other non-object has no `type`: action-schema.ts paramValueViolation's default arm
+        assert V.param_value_violation(bad, 1) == {"code": "bad_type", "reason": "unknown declared type"}
