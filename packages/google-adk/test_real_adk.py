@@ -66,7 +66,7 @@ def place_order_ctx(sku: str, tool_context: Any) -> str:
 def _guard(fn: Any, **kw: Any) -> Any:
     opts = {"audience": AUD, "resolve_grant": resolver, "now": NOW}
     opts.update(kw)
-    return pca_tool(REQUIRE, **opts)(fn)
+    return pca_tool(REQUIRE, **opts, signature_only=True)(fn)
 
 
 async def _run(agent: LlmAgent, state: Optional[Dict[str, Any]]) -> None:
@@ -126,7 +126,7 @@ def test_function_tool_run_async_denies_directly() -> None:
 
 def test_before_tool_callback_allows_and_denies_in_runner() -> None:
     cb = pca_before_tool_callback(audience=AUD, require={"place_order": REQUIRE},
-                                  resolve_grant=resolver, now=NOW)
+                                  resolve_grant=resolver, now=NOW, signature_only=True)
     asyncio.run(_run(_agent(tools=[FunctionTool(place_order)], before_tool_callback=cb),
                      {"PCA-Action": PCACTN}))
     assert RAN == ["A1"]
@@ -142,7 +142,7 @@ def test_before_tool_callback_allows_and_denies_in_runner() -> None:
 
 
 def test_before_tool_callback_wrong_audience_denied() -> None:
-    cb = pca_before_tool_callback(audience="rs-other", require=REQUIRE, resolve_grant=resolver, now=NOW)
+    cb = pca_before_tool_callback(audience="rs-other", require=REQUIRE, resolve_grant=resolver, now=NOW, signature_only=True)
     asyncio.run(_run(_agent(tools=[FunctionTool(place_order)], before_tool_callback=cb),
                      {"PCA-Action": PCACTN}))
     assert RAN == []

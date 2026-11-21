@@ -99,7 +99,7 @@ def _split(n: int) -> int:
 
 
 def _tree_root(hs: List[bytes]) -> bytes:
-    if len(hs) == 1:
+    if len(hs) <= 1:  # an empty list raises at hs[0], it never recurses without end
         return hs[0]
     k = _split(len(hs))
     return map_node_hash(_tree_root(hs[:k]), _tree_root(hs[k:]))

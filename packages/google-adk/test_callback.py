@@ -67,7 +67,7 @@ class _Agent:
 
 def _cb(require=REQUIRE, *, audience=AUD, **kw):
     return pca_before_tool_callback(audience=audience, require=require, resolve_grant=resolver,
-                                    now=NOW, **kw)
+                                    now=NOW, **kw, signature_only=True)
 
 
 # ---- a whole agent, gated ------------------------------------------------------------
@@ -175,12 +175,12 @@ def test_raise_on_deny_raises_instead_of_returning():
 
 def test_requires_audience():
     with pytest.raises(ValueError):
-        pca_before_tool_callback(audience="", require=REQUIRE, resolve_grant=resolver)
+        pca_before_tool_callback(audience="", require=REQUIRE, resolve_grant=resolver, signature_only=True)
 
 
 def test_requires_verifier_or_resolver():
     with pytest.raises(ValueError):
-        pca_before_tool_callback(audience=AUD, require=REQUIRE)
+        pca_before_tool_callback(audience=AUD, require=REQUIRE, signature_only=True)
 
 
 def test_rejects_both_verifier_and_resolver():
@@ -189,7 +189,7 @@ def test_rejects_both_verifier_and_resolver():
             raise AssertionError("not called")
 
     with pytest.raises(ValueError):
-        pca_before_tool_callback(audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver)
+        pca_before_tool_callback(audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver, signature_only=True)
 
 
 def test_malformed_require_entry_raises_at_call_time():

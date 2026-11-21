@@ -1,0 +1,41 @@
+{
+  "about": "Reviewed exceptions to the release dependency-vulnerability gate (vuln-gate.mjs). One entry per advisory and package: id (GHSA / PYSEC / RUSTSEC / CVE, or an alias), ecosystem (npm | pypi | crates), package, reason (why it does not affect the released packages, at least 20 characters), reviewed_by, reviewed_on and expires (YYYY-MM-DD, at most 180 days after reviewed_on). Expired or incomplete entries fail the release.",
+  "entries": [
+    {
+      "id": "PYSEC-2026-311",
+      "ecosystem": "pypi",
+      "package": "chromadb",
+      "reason": "chromadb 1.5.9 is the newest release and no fixed version exists. Reaches atlas-pca-crewai only through the optional `crewai` extra (crewai -> chromadb); a plain install of atlas-pca-crewai does not install it. The flaw is in the Chroma HTTP server's collection-creation endpoint (trust_remote_code on a model repository). The PCA guard never imports chromadb, starts a Chroma server or exposes one; CrewAI uses chromadb as an embedded local client for agent memory, so the server endpoint is not reachable from the released package. Re-review when chromadb publishes a fix.",
+      "reviewed_by": "Claude (0.5 vulnerability-gate track); owner to confirm before tagging",
+      "reviewed_on": "2026-10-26",
+      "expires": "2027-01-24"
+    },
+    {
+      "id": "PYSEC-2026-3814",
+      "ecosystem": "pypi",
+      "package": "chromadb",
+      "reason": "chromadb 1.5.9 is the newest release and no fixed version exists. Reaches atlas-pca-crewai only through the optional `crewai` extra (crewai -> chromadb); a plain install of atlas-pca-crewai does not install it. The flaw is in the Chroma HTTP server's collection-update endpoint (trust_remote_code on a model repository). The PCA guard never imports chromadb, starts a Chroma server or exposes one; CrewAI uses chromadb as an embedded local client for agent memory, so the server endpoint is not reachable from the released package. Re-review when chromadb publishes a fix.",
+      "reviewed_by": "Claude (0.5 vulnerability-gate track); owner to confirm before tagging",
+      "reviewed_on": "2026-10-26",
+      "expires": "2027-01-24"
+    },
+    {
+      "id": "PYSEC-2026-3813",
+      "ecosystem": "pypi",
+      "package": "chromadb",
+      "reason": "chromadb 1.5.9 is the newest release and no fixed version exists. Reaches atlas-pca-crewai only through the optional `crewai` extra (crewai -> chromadb); a plain install of atlas-pca-crewai does not install it. The flaw is cross-tenant authorization in the Chroma HTTP server. The PCA guard never imports chromadb, starts a Chroma server or exposes one; CrewAI uses chromadb as an embedded local client for agent memory, so the server endpoint is not reachable from the released package. Re-review when chromadb publishes a fix.",
+      "reviewed_by": "Claude (0.5 vulnerability-gate track); owner to confirm before tagging",
+      "reviewed_on": "2026-10-26",
+      "expires": "2027-01-24"
+    },
+    {
+      "id": "PYSEC-2026-3815",
+      "ecosystem": "pypi",
+      "package": "chromadb",
+      "reason": "chromadb 1.5.9 is the newest release and no fixed version exists. Reaches atlas-pca-crewai only through the optional `crewai` extra (crewai -> chromadb); a plain install of atlas-pca-crewai does not install it. The flaw is in the server-side SimpleRBACAuthorizationProvider. The PCA guard never imports chromadb, starts a Chroma server or exposes one; CrewAI uses chromadb as an embedded local client for agent memory, so the server endpoint is not reachable from the released package. Re-review when chromadb publishes a fix.",
+      "reviewed_by": "Claude (0.5 vulnerability-gate track); owner to confirm before tagging",
+      "reviewed_on": "2026-10-26",
+      "expires": "2027-01-24"
+    }
+  ]
+}

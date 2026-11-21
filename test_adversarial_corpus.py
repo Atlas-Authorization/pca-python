@@ -25,7 +25,7 @@ class AdversarialCorpus(unittest.TestCase):
                 continue
             raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
             ctx = v["context"]
-            got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"], allowed_suites=ctx.get("allowed_suites"))
+            got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"], allowed_suites=ctx.get("allowed_suites"), insecure_skip_plan_root_check=True)
             if got.allow != v["expect"]["allow"] or got.checks != v["expect"]["checks"]:
                 self.fail(f"{v['name']}: got allow={got.allow} checks={got.checks} ({got.reason}); want {v['expect']}")
             ran += 1

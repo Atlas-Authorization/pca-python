@@ -27,6 +27,8 @@ PCA_ARG = "pca_action"
 ProofInput = Union[Dict[str, Any], str, bytes, bytearray, None]
 
 _CURRENT: ContextVar[ProofInput] = ContextVar("atlas_pca_action", default=None)
+#: The provenance bundle for the calls in this context (provenance by default), bound by :func:`pca_context`.
+_PROVENANCE: ContextVar[Any] = ContextVar("atlas_pca_provenance", default=None)
 
 
 def coerce_pcactn(raw: ProofInput) -> Optional[Dict[str, Any]]:
@@ -75,9 +77,17 @@ def current_proof() -> ProofInput:
     return _CURRENT.get()
 
 
+def current_provenance() -> Any:
+    """The provenance bundle bound to the current context by :func:`pca_context`, or ``None``."""
+    return _PROVENANCE.get()
+
+
 @contextmanager
-def pca_context(pcactn: ProofInput) -> Iterator[None]:
-    """Bind ``pcactn`` as the current proof for the duration of the ``with`` block.
+def pca_context(pcactn: ProofInput, provenance: Any = None) -> Iterator[None]:
+    """Bind ``pcactn`` as the current proof for the duration of the ``with`` block, and ``provenance`` (the bundle your
+    agent harness's ``atlas_pca.ProvenanceRecorder.for_action`` returned for the call: an object, its JSON or its base64url
+    ``PCA-Provenance`` form) as its provenance bundle. Without a bundle (and without a ``recorder`` on the guard) the call is
+    unlabelled, so a sensitive tool escalates instead of running.
 
     Usage::
 
@@ -85,7 +95,9 @@ def pca_context(pcactn: ProofInput) -> Iterator[None]:
             crew.kickoff(inputs=...)   # every guarded tool sees this proof
     """
     token = _CURRENT.set(pcactn)
+    ptoken = _PROVENANCE.set(provenance)
     try:
         yield
     finally:
+        _PROVENANCE.reset(ptoken)
         _CURRENT.reset(token)
