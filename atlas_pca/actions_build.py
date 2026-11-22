@@ -1,0 +1,182 @@
+"""`pca actions build|sign` as pure functions (native port of build.ts of the TypeScript reference @atlasauth/pca-actions): from defs to the
+unsigned schema, the pack, policy cards, ontology fragment, MCP tool map and generated TypeScript declarations, plus pack signing and the
+consistency check. Ed25519 signing needs the `cryptography` package (as KeyPair.sign does)."""
+import json
+import re
+from typing import Any, Callable, Dict, List, Optional
+
+from .actions import PACK_DIGEST_DOMAIN, ActionKitError, def_digest, pack_root, tables_digest, traits_digest, validate_def, _u16key, _verify_b64u, canonical_bytes_strict, decode_b64u_strict, b64u
+from .actions_derive import card_of, mcp_annotations_of, operation_of, to_ontology, to_schema_doc
+from .actions_effective import effective_with
+from .actions_lint import lint_rules_digest
+from .agent import KeyPair
+
+MAX_PACK_DEFS = 4096
+PACK_SIGN_DOMAIN = PACK_DIGEST_DOMAIN + "\0"
+Verifier = Optional[Callable[[dict], Any]]
+
+
+def build_artifacts(defs_in: List[dict], cfg: dict, reg: Dict[str, dict], attestation_verified: Verifier = None) -> dict:
+    """Every output of a build. Raises on a pack above the unsharded limit, a duplicate verb or a unit conflict (never a partial build)."""
+    defs = sorted(defs_in, key=lambda d: _u16key(d["verb"]))
+    if len(defs) > MAX_PACK_DEFS:
+        raise ValueError("a pack above %d defs must be sharded (%d given)" % (MAX_PACK_DEFS, len(defs)))
+    for i in range(1, len(defs)):
+        if defs[i]["verb"] == defs[i - 1]["verb"]:
+            raise ValueError("verb '%s' appears twice" % defs[i]["verb"])
+    if not defs:
+        raise ActionKitError("empty_pack", "a pack has at least one def")
+    root = pack_root([def_digest(d) for d in defs])
+    schema = to_schema_doc(defs, reg, {"site": cfg["site"], "aud": cfg["aud"], "version": cfg["version"], "pack": {"ns": cfg["ns"], "version": cfg["version"], "root": root}}, attestation_verified)
+    pack = {"v": 1, "kind": "pca-action-pack", "ns": cfg["ns"], "version": cfg["version"], "stability": cfg["stability"], "traits_digest": traits_digest(reg),
+            "roles_digest": tables_digest(), "rules_digest": lint_rules_digest(), "root": root, "defs": defs, "prev": None, "evolution": []}
+    cards = [card_of(d, effective_with(d, reg, attestation_verified), reg) for d in defs]
+    tools: Dict[str, dict] = {}
+    for d in defs:
+        mcp = (d.get("bindings") or {}).get("mcp")
+        if mcp is not None:
+            tools[mcp["tool"]] = {"verb": d["verb"], "annotations": mcp_annotations_of(d, effective_with(d, reg, attestation_verified))}
+    return {"schema": schema, "pack": pack, "cards": cards, "ontology": to_ontology(defs, reg, attestation_verified), "mcp": {"tools": tools}, "types": generate_types(defs)}
+
+
+def tool_action_map_of(defs: List[dict]) -> Callable[[str, dict], Optional[dict]]:
+    """The ToolActionMap of the defs' MCP bindings: tool name and arguments to {verb, resource}, or None."""
+    m: Dict[str, dict] = {}
+    for d in defs:
+        mcp = (d.get("bindings") or {}).get("mcp")
+        if mcp is not None:
+            m[mcp["tool"]] = d
+
+    def mapper(tool: str, args: dict) -> Optional[dict]:
+        d = m.get(tool)
+        if d is None:
+            return None
+        r = operation_of(d, {"params": args})
+        return {"verb": r["op"]["verb"], "resource": r["op"]["resource"]} if r["ok"] else None
+
+    return mapper
+
+
+# ---- generated types ---------------------------------------------------------------------------------------------------------
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _pascal(s: str) -> str:
+    return "".join(x[:1].upper() + x[1:] for x in re.split(r"[._]", s))
+
+
+def _key(k: str) -> str:
+    return k if _IDENT_RE.fullmatch(k) else json.dumps(k, ensure_ascii=False)
+
+
+def _ts_type(p: dict) -> str:
+    t = p["type"]
+    if t in ("integer", "duration"):
+        return "number"
+    if t == "boolean":
+        return "boolean"
+    if t == "set":
+        return "Array<%s>" % (" | ".join(json.dumps(v, ensure_ascii=False) for v in (p.get("values") or [])) or "string")
+    if t == "array":
+        return "number[]" if p.get("items") == "integer" else "string[]"
+    return " | ".join(json.dumps(v, ensure_ascii=False) for v in p["values"]) if p.get("values") is not None else "string"
+
+
+def _render(n: dict, indent: str) -> str:
+    lines = []
+    for k in sorted(n["kids"], key=_u16key):
+        c = n["kids"][k]
+        if "leaf" in c:
+            lines.append("%s%s%s: %s;" % (indent, _key(k), "?" if c["leaf"].get("required") is False else "", _ts_type(c["leaf"])))
+        else:
+            lines.append("%s%s: {\n%s\n%s};" % (indent, _key(k), _render(c, indent + "  "), indent))
+    return "\n".join(lines)
+
+
+def generate_types(defs: List[dict]) -> str:
+    """TypeScript declarations for typed call sites: one params interface per verb, ActionParams and ActionVerb."""
+    out = ["// Generated by `pca actions build`. Do not edit.", ""]
+    names = []
+    for d in sorted(defs, key=lambda x: _u16key(x["verb"])):
+        root: dict = {"kids": {}}
+        for name in sorted(d["params"], key=_u16key):
+            n = root
+            segs = name.split(".")
+            for i, s in enumerate(segs):
+                if s not in n["kids"]:
+                    n["kids"][s] = {"kids": {}}
+                n = n["kids"][s]
+                if i == len(segs) - 1:
+                    n["leaf"] = d["params"][name]
+        iface = _pascal(d["verb"]) + "Params"
+        names.append("  %s: %s;" % (json.dumps(d["verb"], ensure_ascii=False), iface))
+        out.extend(["export interface %s {" % iface, _render(root, "  "), "}", ""])
+    out.extend(["export interface ActionParams {"] + names + ["}", "", "export type ActionVerb = keyof ActionParams;", ""])
+    return "\n".join(out)
+
+
+# ---- pack signing and consistency --------------------------------------------------------------------------------------------
+
+def _pack_message(p: dict) -> bytes:
+    return PACK_SIGN_DOMAIN.encode("utf-8") + canonical_bytes_strict(p)
+
+
+def pack_consistency_error(p: Any, reg: Dict[str, dict]) -> Optional[str]:
+    """None when the pack is internally consistent: every def valid and unique, the Merkle root and digests recomputed."""
+    try:
+        if not isinstance(p, dict):
+            return "the pack must be an object"
+        if p.get("kind") != "pca-action-pack" or p.get("v") != 1 or isinstance(p.get("v"), bool):
+            return "not a pca-action-pack v1"
+        defs = p.get("defs")
+        if not isinstance(defs, list) or len(defs) > MAX_PACK_DEFS:
+            return "defs must be a list within the unsharded limit"
+        seen = set()
+        for d in defs:
+            e = validate_def(d)
+            if e:
+                return "def %s: %s" % (d.get("verb", "?") if isinstance(d, dict) else "?", e)
+            if d["verb"] in seen:
+                return "verb '%s' is defined twice" % d["verb"]
+            seen.add(d["verb"])
+        if p.get("root") != pack_root([def_digest(d) for d in defs]):
+            return "the pack root does not match its defs"
+        if p.get("traits_digest") != traits_digest(reg):
+            return "traits_digest does not match the trait registry"
+        return None
+    except Exception as e:  # noqa: BLE001
+        return "malformed pack: %s" % e
+
+
+def sign_pack(pack: dict, kid: str, secret: bytes, reg: Dict[str, dict]) -> dict:
+    """Sign a pack as the registry (Ed25519, 32-byte secret). Refuses an inconsistent pack."""
+    bad = pack_consistency_error(pack, reg)
+    if bad:
+        raise ValueError("signPack: %s" % bad)
+    body = {k: v for k, v in pack.items() if k != "sig"}
+    return {**body, "sig": {"alg": "ed25519", "kid": kid, "value": b64u(KeyPair(bytes(secret)).sign(_pack_message(body)))}}
+
+
+def pack_key_of(kid: str, secret: bytes) -> dict:
+    return {"kid": kid, "alg": "ed25519", "pk": KeyPair(bytes(secret)).public}
+
+
+def verify_signed_pack(pack: Any, keys: List[dict], reg: Dict[str, dict]) -> dict:
+    """Verify a signed pack against pinned registry keys: consistency, the key entry by kid, and the signature. Never raises."""
+    try:
+        bad = pack_consistency_error(pack, reg)
+        if bad:
+            return {"ok": False, "reason": bad}
+        sig = pack.get("sig")
+        body = {k: v for k, v in pack.items() if k != "sig"}
+        if not sig or not isinstance(sig, dict) or sig.get("alg") != "ed25519" or not isinstance(sig.get("kid"), str) or not isinstance(sig.get("value"), str):
+            return {"ok": False, "reason": "missing or malformed signature"}
+        k = next((x for x in keys if x["kid"] == sig["kid"]), None)
+        if k is None:
+            return {"ok": False, "reason": "no registry key with kid '%s'" % sig["kid"]}
+        if k.get("alg") != "ed25519" or decode_b64u_strict(k.get("pk"), 32) is None:
+            return {"ok": False, "reason": "the registry key entry is malformed"}
+        return {"ok": True} if _verify_b64u(k["pk"], _pack_message(body), sig["value"]) else {"ok": False, "reason": "pack signature invalid"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": "pack verification error: %s" % e}

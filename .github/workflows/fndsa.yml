@@ -1,0 +1,36 @@
+name: FN-DSA (libfndsa)
+
+# atlas_pca.fndsa_native: real FN-DSA through ctypes over libfndsa (Pornin fn-dsa 0.4.0, built here from the flagship crate): 480-case corpus, known-answer replay, signing end to end.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fndsa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus and the lattice crate from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono python-pca
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest cryptography
+      - name: libfndsa (cargo build --features capi)
+        run: echo "ATLAS_PCA_LIBFNDSA=$(.github/scripts/build-libfndsa.sh "$RUNNER_TEMP/fndsa" "$RUNNER_TEMP/mono/packages/pca-fndsa-wasm/crate" | tail -1)/libfndsa.so" >> "$GITHUB_ENV"
+      - name: FN-DSA replay
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        env:
+          ATLAS_PCA_LIBFNDSA_REQUIRED: '1'
+        run: python -m pytest -q test_ref_fndsa.py test_ref_fndsa_native.py test_ref_fndsa_core.py test_ref_fndsa_e2e.py test_agent_producer.py::PostQuantumVectors

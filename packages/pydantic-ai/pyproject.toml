@@ -1,6 +1,6 @@
 [project]
 name = "atlas-pca-pydantic-ai"
-version = "0.4.3"
+version = "0.5.0"
 description = "Proof-Carrying Authority tool guard for Pydantic AI (verify a PCActn before each tool runs)"
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,7 @@ classifiers = [
   "Topic :: Security :: Cryptography",
 ]
 requires-python = ">=3.9"
-dependencies = ["atlas-pca>=0.4.3,<0.5"]  # the shared reference verifier; this package adds no crypto
+dependencies = ["atlas-pca>=0.5,<0.6"]  # the shared reference verifier; this package adds no crypto
 
 [project.optional-dependencies]
 test-real = ["pytest>=7", "pydantic-ai-slim==2.54.0", "pytest-asyncio"]  # pinned framework versions the end-to-end tests are validated against (see Makefile / sdks/scripts/test-adapters-real.sh)
@@ -34,3 +34,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["atlas_pca_pydantic_ai"]
+
+[tool.pca]
+# Maturity tier: stable | production | experimental (the PCA maturity tiers page defines them)
+maturity = "production"
+pending_ci = true

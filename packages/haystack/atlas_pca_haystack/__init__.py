@@ -9,6 +9,7 @@ from ._proof import (  # noqa: F401
     PCA_ARG,
     coerce_pcactn,
     current_proof,
+    current_provenance,
     pca_context,
     reset_pca_action,
     set_pca_action,
@@ -24,6 +25,7 @@ from .tool import (  # noqa: F401
     pca_tool,
 )
 from .verifier import (  # noqa: F401
+    AuthorizeVerifier,
     CoreVerifier,
     GrantResolver,
     ToolDecision,
@@ -31,6 +33,7 @@ from .verifier import (  # noqa: F401
 )
 
 __all__ = [
+    "AuthorizeVerifier",
     "PCA_ARG",
     "CoreVerifier",
     "GrantResolver",
@@ -41,6 +44,7 @@ __all__ = [
     "Verifier",
     "coerce_pcactn",
     "current_proof",
+    "current_provenance",
     "guard_tool_invoker",
     "guard_tools",
     "pca_context",

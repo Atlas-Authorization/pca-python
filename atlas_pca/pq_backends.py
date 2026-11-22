@@ -24,6 +24,8 @@ import ctypes
 import ctypes.util
 import glob
 import os
+
+from ._native_lib import bundled
 from typing import Dict, Optional
 
 from .mldsa import ml_dsa65_available, ml_dsa65_verify
@@ -40,7 +42,17 @@ KEY_TYPES = {
     "SLH-DSA-SHA2-128f": (32, 17088),
     "SLH-DSA-SHA2-256s": (64, 29792),
     "LESS-cat1": (97484, 1329),  # signature: the MAXIMUM; any length sig_len_ok accepts
+    "FN-DSA-512": (897, 666),  # raw FN-DSA through the fndsa.py backend seam (nothing registered at import)
+    "FN-DSA-1024": (1793, 1280),
 }
+_FN_DSA = ("FN-DSA-512", "FN-DSA-1024")
+
+
+def _fndsa_registered() -> bool:
+    from . import fndsa  # lazy: fndsa imports pca, which imports this module
+    return fndsa.get_falcon_backend() is not fndsa._DEFAULT_BACKEND
+LESS_SECRET_KEY_BYTES = 32
+LESS_SEED_BYTES = 32
 LESS_SIGNATURE_MIN_BYTES = 1153
 LESS_SIGNATURE_STEP_BYTES = 16
 
@@ -154,6 +166,9 @@ _less_tried = False
 def _less_candidates():
     env = os.environ.get("ATLAS_PCA_LIBLESS") or ""
     paths = [p for p in env.split(os.pathsep) if p]
+    packaged = bundled("libatlas_less.so", "libatlas_less.dylib", "atlas_less.dll")
+    if packaged:
+        paths.append(packaged)
     repo_build = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "pca-less-c", "build")
     for name in ("libatlas_less.so", "libatlas_less.dylib", "atlas_less.dll"):
         paths.append(os.path.join(repo_build, name))
@@ -179,6 +194,17 @@ def _libless():
                 getattr(lib, f).argtypes = []
             lib.atlas_less_cat1_verify.restype = ctypes.c_int
             lib.atlas_less_cat1_verify.argtypes = [cp, sz, cp, sz, cp, sz]
+            lib._atlas_can_sign = False
+            try:  # signing is in the same C library; an older build without it stays verify-only
+                lib.atlas_less_cat1_secret_key_bytes.restype = sz
+                lib.atlas_less_cat1_secret_key_bytes.argtypes = []
+                lib.atlas_less_cat1_keygen.restype = ctypes.c_int
+                lib.atlas_less_cat1_keygen.argtypes = [ctypes.c_void_p, sz, ctypes.c_void_p, sz, cp, sz]
+                lib.atlas_less_cat1_sign.restype = ctypes.c_int
+                lib.atlas_less_cat1_sign.argtypes = [cp, sz, cp, sz, cp, sz, ctypes.c_void_p, sz, ctypes.POINTER(sz)]
+                lib._atlas_can_sign = lib.atlas_less_cat1_secret_key_bytes() == LESS_SECRET_KEY_BYTES
+            except Exception:  # noqa: BLE001
+                lib._atlas_can_sign = False
             sizes = (lib.atlas_less_cat1_public_key_bytes(), lib.atlas_less_cat1_signature_min_bytes(),
                      lib.atlas_less_cat1_signature_max_bytes())
         except Exception:  # noqa: BLE001 - missing file / symbols: try the next one
@@ -189,10 +215,51 @@ def _libless():
     return None
 
 
+def less_can_sign() -> bool:
+    """True when the loaded LESS library carries key generation and signing."""
+    lib = _libless()
+    return lib is not None and getattr(lib, "_atlas_can_sign", False) is True
+
+
+def less_cat1_keygen(seed: bytes) -> "tuple[bytes, bytes]":
+    """LESS cat-1 key pair ``(public, secret)`` derived from a 32-byte seed (the secret key is the 32-byte seed). Raises RuntimeError
+    ``unsupported_suite`` when no LESS library with signing is available."""
+    if not isinstance(seed, (bytes, bytearray)) or len(seed) != LESS_SEED_BYTES:
+        raise ValueError("less_cat1_keygen: seed must be %d bytes" % LESS_SEED_BYTES)
+    if not less_can_sign():
+        raise RuntimeError("unsupported_suite: LESS-cat1 (no libatlas_less with signing)")
+    lib, n = _libless(), KEY_TYPES["LESS-cat1"][0]
+    pk, sk = ctypes.create_string_buffer(n), ctypes.create_string_buffer(LESS_SECRET_KEY_BYTES)
+    if lib.atlas_less_cat1_keygen(pk, n, sk, LESS_SECRET_KEY_BYTES, bytes(seed), len(seed)) != 1:
+        raise RuntimeError("unsupported_suite: LESS-cat1 (key generation failed)")
+    return pk.raw[:n], sk.raw[:LESS_SECRET_KEY_BYTES]
+
+
+def less_cat1_sign(secret_key: bytes, msg: bytes, seed: bytes) -> bytes:
+    """Detached LESS cat-1 signature (1,153..1,329 bytes) of `msg` with an explicit 32-byte RNG seed (a repeated seed repeats the
+    signature). Raises RuntimeError ``unsupported_suite`` without a LESS library with signing."""
+    if not isinstance(seed, (bytes, bytearray)) or len(seed) != LESS_SEED_BYTES:
+        raise ValueError("less_cat1_sign: seed must be %d bytes" % LESS_SEED_BYTES)
+    if not isinstance(secret_key, (bytes, bytearray)) or len(secret_key) != LESS_SECRET_KEY_BYTES:
+        raise ValueError("less_cat1_sign: secret key must be %d bytes" % LESS_SECRET_KEY_BYTES)
+    if not less_can_sign():
+        raise RuntimeError("unsupported_suite: LESS-cat1 (no libatlas_less with signing)")
+    lib, cap = _libless(), KEY_TYPES["LESS-cat1"][1]
+    out, n = ctypes.create_string_buffer(cap), ctypes.c_size_t(0)
+    if lib.atlas_less_cat1_sign(bytes(secret_key), len(secret_key), bytes(msg), len(msg), bytes(seed), len(seed), out, cap, ctypes.byref(n)) != 1:
+        raise RuntimeError("unsupported_suite: LESS-cat1 (signing failed)")
+    sig = out.raw[:n.value]
+    if not sig_len_ok("LESS-cat1", len(sig)):
+        raise RuntimeError("unsupported_suite: LESS-cat1 (bad signature length)")
+    return sig
+
+
 def available(key_type: str) -> bool:
     """True iff a backend for `key_type` is usable in this runtime."""
     if key_type == "LESS-cat1":
         return _libless() is not None
+    if key_type in _FN_DSA:
+        return _fndsa_registered()
     if key_type == "ML-DSA-65" and ml_dsa65_available():
         return True
     if key_type == "ML-DSA-87" and _ML_DSA_87 is not None:
@@ -209,6 +276,9 @@ def verify(key_type: str, pk: bytes, msg: bytes, sig: bytes) -> bool:
         if len(pk) != lens[0] or not sig_len_ok(key_type, len(sig)) or not isinstance(msg, (bytes, bytearray)):
             return False
         pk, msg, sig = bytes(pk), bytes(msg), bytes(sig)
+        if key_type in _FN_DSA:
+            from . import fndsa
+            return fndsa.fndsa_verify(key_type.lower(), pk, msg, sig)
         if key_type == "LESS-cat1":
             lib = _libless()
             return lib is not None and lib.atlas_less_cat1_verify(pk, len(pk), msg, len(msg), sig, len(sig)) == 1
@@ -219,3 +289,108 @@ def verify(key_type: str, pk: bytes, msg: bytes, sig: bytes) -> bool:
         return _openssl_verify(key_type, pk, msg, sig)
     except Exception:  # noqa: BLE001 - totality on hostile input
         return False
+
+
+# ---- signing through the same libcrypto (the producer side, atlas_pca.agent) --------------------------------------------
+
+def _bind_sign(lib):
+    if getattr(lib, "_atlas_sign_bound", False):
+        return lib
+    vp, sz, cp = ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p
+    lib.EVP_PKEY_CTX_new_from_name.restype = vp
+    lib.EVP_PKEY_CTX_new_from_name.argtypes = [vp, cp, cp]
+    lib.EVP_PKEY_keygen_init.restype = ctypes.c_int
+    lib.EVP_PKEY_keygen_init.argtypes = [vp]
+    lib.EVP_PKEY_CTX_set_params.restype = ctypes.c_int
+    lib.EVP_PKEY_CTX_set_params.argtypes = [vp, vp]
+    lib.EVP_PKEY_generate.restype = ctypes.c_int
+    lib.EVP_PKEY_generate.argtypes = [vp, ctypes.POINTER(vp)]
+    lib.EVP_PKEY_CTX_free.restype = None
+    lib.EVP_PKEY_CTX_free.argtypes = [vp]
+    lib.EVP_PKEY_get_raw_public_key.restype = ctypes.c_int
+    lib.EVP_PKEY_get_raw_public_key.argtypes = [vp, vp, ctypes.POINTER(sz)]
+    lib.EVP_DigestSignInit_ex.restype = ctypes.c_int
+    lib.EVP_DigestSignInit_ex.argtypes = [vp, vp, cp, vp, cp, vp, vp]
+    lib.EVP_DigestSign.restype = ctypes.c_int
+    lib.EVP_DigestSign.argtypes = [vp, vp, ctypes.POINTER(sz), cp, sz]
+    lib._atlas_sign_bound = True
+    return lib
+
+
+class _OsslParam(ctypes.Structure):
+    _fields_ = [("key", ctypes.c_char_p), ("data_type", ctypes.c_uint), ("data", ctypes.c_void_p),
+                ("data_size", ctypes.c_size_t), ("return_size", ctypes.c_size_t)]
+
+
+_OSSL_PARAM_INTEGER, _OSSL_PARAM_OCTET_STRING = 1, 5
+_OSSL_PARAM_UNMODIFIED = ctypes.c_size_t(-1).value
+
+
+def _params(key: bytes, data_type: int, buf) -> "ctypes.Array":
+    """A one-entry OSSL_PARAM array (plus the end marker) over `buf`; the caller keeps `buf` alive for the call."""
+    arr = (_OsslParam * 2)()
+    arr[0] = _OsslParam(key, data_type, ctypes.addressof(buf), ctypes.sizeof(buf), _OSSL_PARAM_UNMODIFIED)
+    return arr
+
+
+def openssl_available(key_type: str) -> bool:
+    """True iff this runtime's libcrypto (OpenSSL >= 3.5) handles `key_type` (it then also signs it)."""
+    return key_type in KEY_TYPES and key_type != "LESS-cat1" and key_type not in _FN_DSA and _openssl_available(key_type)
+
+
+class OpensslKey:
+    """A key pair generated by libcrypto (OpenSSL >= 3.5). `public` is the raw public key; sign() is pure, empty context and
+    DETERMINISTIC (ML-DSA rnd = 0^32, SLH-DSA opt_rand = PK.seed), so it is byte-identical to the TypeScript reference.
+    `seed` (ML-DSA: 32-byte xi; SLH-DSA: SK.seed || SK.prf || PK.seed) derives the key; omitted, it is random."""
+
+    def __init__(self, key_type: str, seed: Optional[bytes] = None):
+        lib = _libcrypto()
+        if lib is None or not _openssl_available(key_type):
+            raise RuntimeError("unsupported_suite: %s (needs OpenSSL >= 3.5 libcrypto)" % key_type)
+        self._lib, self._type = _bind_sign(lib), key_type
+        ctx = lib.EVP_PKEY_CTX_new_from_name(None, key_type.encode(), None)
+        if not ctx:
+            raise RuntimeError("unsupported_suite: %s" % key_type)
+        try:
+            pkey = ctypes.c_void_p()
+            if lib.EVP_PKEY_keygen_init(ctx) != 1:
+                raise RuntimeError("unsupported_suite: %s (key generation failed)" % key_type)
+            if seed is not None:
+                buf = ctypes.create_string_buffer(bytes(seed), len(seed))
+                try:
+                    if lib.EVP_PKEY_CTX_set_params(ctx, _params(b"seed", _OSSL_PARAM_OCTET_STRING, buf)) != 1:
+                        raise RuntimeError("unsupported_suite: %s (seeded key generation failed)" % key_type)
+                finally:
+                    ctypes.memset(buf, 0, len(seed))
+            if lib.EVP_PKEY_generate(ctx, ctypes.byref(pkey)) != 1 or not pkey:
+                raise RuntimeError("unsupported_suite: %s (key generation failed)" % key_type)
+        finally:
+            lib.EVP_PKEY_CTX_free(ctx)
+        self._pkey = pkey
+        n = KEY_TYPES[key_type][0]
+        buf, ln = ctypes.create_string_buffer(n), ctypes.c_size_t(n)
+        if lib.EVP_PKEY_get_raw_public_key(pkey, buf, ctypes.byref(ln)) != 1:
+            raise RuntimeError("unsupported_suite: %s (no raw public key)" % key_type)
+        self.public = buf.raw[:ln.value]
+
+    def sign(self, msg: bytes) -> bytes:
+        lib = self._lib
+        ctx = lib.EVP_MD_CTX_new()
+        one = ctypes.c_int(1)
+        try:
+            if lib.EVP_DigestSignInit_ex(ctx, None, None, None, None, self._pkey,
+                                         _params(b"deterministic", _OSSL_PARAM_INTEGER, one)) != 1:
+                raise RuntimeError("signing failed")
+            n = KEY_TYPES[self._type][1]
+            buf, ln = ctypes.create_string_buffer(n), ctypes.c_size_t(n)
+            if lib.EVP_DigestSign(ctx, buf, ctypes.byref(ln), msg, len(msg)) != 1:
+                raise RuntimeError("signing failed")
+            return buf.raw[:ln.value]
+        finally:
+            lib.EVP_MD_CTX_free(ctx)
+
+    def __del__(self):
+        try:
+            self._lib.EVP_PKEY_free(self._pkey)
+        except Exception:  # noqa: BLE001
+            pass
