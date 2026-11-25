@@ -39,7 +39,7 @@ class _BaseToolLike:
 
 
 def _guard(tool, *, require=REQUIRE, audience=AUD):
-    return pca_tool(require, audience=audience, resolve_grant=resolver, now=NOW)(tool)
+    return pca_tool(require, audience=audience, resolve_grant=resolver, now=NOW, signature_only=True)(tool)
 
 
 # ---- the happy path ------------------------------------------------------------------
@@ -142,7 +142,7 @@ def test_insufficient_capability_is_rejected_and_tool_not_run():
 
 def test_unknown_grant_is_rejected():
     tool = _BaseToolLike()
-    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=lambda ref: None, now=NOW)(tool)
+    guarded = pca_tool(REQUIRE, audience=AUD, resolve_grant=lambda ref: None, now=NOW, signature_only=True)(tool)
     with pca_context(PCACTN):
         with pytest.raises(PcaToolDenied) as ei:
             guarded.run("widget")
@@ -183,9 +183,9 @@ def test_set_reset_pca_action():
 
 def test_pca_tool_requires_verifier_or_resolver():
     with pytest.raises(ValueError):
-        pca_tool(REQUIRE, audience=AUD)
+        pca_tool(REQUIRE, audience=AUD, signature_only=True)
     with pytest.raises(ValueError):
-        pca_tool("not-a-pair", audience=AUD, resolve_grant=resolver)
+        pca_tool("not-a-pair", audience=AUD, resolve_grant=resolver, signature_only=True)
 
 
 def test_custom_verifier_is_used():
@@ -197,7 +197,7 @@ def test_custom_verifier_is_used():
             return ToolDecision(ok=False, reason="nope")
 
     tool = _BaseToolLike()
-    guarded = pca_tool(REQUIRE, audience=AUD, verifier=AlwaysDeny())(tool)
+    guarded = pca_tool(REQUIRE, audience=AUD, verifier=AlwaysDeny(), signature_only=True)(tool)
     with pytest.raises(PcaToolDenied):
         guarded.run("x", pca_action=PCACTN)
     assert seen["called"] == (VERB, RESOURCE, AUD)

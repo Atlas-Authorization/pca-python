@@ -51,7 +51,7 @@ def collect():
             raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
             ctx = v["context"]
             got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"], allowed_suites=ctx.get("allowed_suites"),
-                                     intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
+                                     intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx), insecure_skip_plan_root_check=True)
             out["vectors"][src + ":" + v["name"]] = [got.allow, got.checks, got.reason]
             p = v.get("pcactn")
             chain = p.get("cap_chain") if isinstance(p, dict) else None

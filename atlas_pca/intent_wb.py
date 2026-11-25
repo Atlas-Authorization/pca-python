@@ -540,7 +540,7 @@ def validate_offer_policy(p: Any) -> Optional[str]:
     kids = set()
     for k in sk:
         kid = _get(k, "kid")
-        if (not isinstance(k, dict) or _closed_members(k, ("kid", "pk"), ("pq_pk",), "site_key") is not None
+        if (not isinstance(k, dict) or _closed_members(k, ("kid", "pk"), ("pq_pk",)) is not None
                 or not _is_bounded_string(kid, 64) or not _is_digest(_get(k, "pk"))
                 or not pin_pq_ok(_get(k, "pq_pk")) or kid in kids):
             return "offers policy: every site key needs a unique kid, a 32-byte pk and an optional string pq_pk"
@@ -552,7 +552,7 @@ def validate_offer_policy(p: Any) -> Optional[str]:
     if not isinstance(op, str) or not op.startswith("action.params."):
         return "offers policy: offer_param must be an action.params.* path"
     f = _get(p, "filter")
-    if (not isinstance(f, dict) or _closed_members(f, ("query", "offer"), (), "filter") is not None
+    if (not isinstance(f, dict) or _closed_members(f, ("query", "offer")) is not None
             or not isinstance(_get(f, "query"), dict) or not isinstance(_get(f, "offer"), dict)):
         return "offers policy: filter must be exactly {query: {}, offer: {}}"
     for part in (f["query"], f["offer"]):
@@ -686,7 +686,7 @@ def validate_world_policy(p: Any) -> Optional[str]:
         kids = set()
         for o in ors:
             kid = _get(o, "kid")
-            if (not isinstance(o, dict) or _closed_members(o, ("kid", "pk"), ("pq_pk",), "oracle") is not None
+            if (not isinstance(o, dict) or _closed_members(o, ("kid", "pk"), ("pq_pk",)) is not None
                     or not _is_bounded_string(kid, 64) or not _is_digest(_get(o, "pk"))
                     or not pin_pq_ok(_get(o, "pq_pk")) or kid in kids):
                 return "world '%s': every oracle needs a unique kid, a 32-byte pk and an optional string pq_pk" % wn
@@ -1058,7 +1058,7 @@ def is_prov_path(k: Any) -> bool:
 
 def is_label_key(k: Any) -> bool:
     """label-receipts.ts `isLabelKey`: {site (1..256 B), kid (1..64 B), pk (digest), pq_pk? (non-empty string)}."""
-    return (isinstance(k, dict) and _closed_members(k, ("site", "kid", "pk"), ("pq_pk",), "label_key") is None
+    return (isinstance(k, dict) and _closed_members(k, ("site", "kid", "pk"), ("pq_pk",)) is None
             and _is_bounded_string(_get(k, "site"), 256) and _is_bounded_string(_get(k, "kid"), 64)
             and _is_digest(_get(k, "pk")) and pin_pq_ok(_get(k, "pq_pk")))
 
@@ -1335,7 +1335,7 @@ def validate_classifier_policy(p: Any) -> Optional[str]:
     ids = set()
     for c in p["classifiers"]:
         if (not isinstance(c, dict)
-                or _closed_members(c, ("id", "param", "labels", "keys", "k"), ("measurements", "pq_keys"), "classifier") is not None):
+                or _closed_members(c, ("id", "param", "labels", "keys", "k"), ("measurements", "pq_keys")) is not None):
             return "every classifier is exactly {id, param, labels, keys, k, measurements?, pq_keys?}"
         cid = _get(c, "id")
         if not isinstance(cid, str) or INTENT_NAME_RE.fullmatch(cid) is None or cid in ids:
