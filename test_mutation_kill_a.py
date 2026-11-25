@@ -170,10 +170,13 @@ def test_strict_parse_underflowing_decimal_is_zero():
 
 # ---- canonicalization -----------------------------------------------------------------
 
-def test_utf8_key_surrogatepass():
-    assert _utf8_key("\ud800") == b"\xed\xa0\x80"
-    assert _utf8_key("a\udfff") == b"a\xed\xbf\xbf"
-    assert canonicalize({"\ud800": 1, "a": 2, "": 3}) == '{"a":2,"\ud800":1,"":3}'
+def test_utf8_key_text_encoder_bytes():
+    # compareUtf8: the TextEncoder bytes (a lone surrogate is U+FFFD), ties broken by UTF-16 code-unit order
+    assert _utf8_key("\ud800")[0] == b"\xef\xbf\xbd"
+    assert _utf8_key("a\udfff")[0] == b"a\xef\xbf\xbd"
+    assert _utf8_key("\ud800") < _utf8_key("\ud801") < _utf8_key("\ufffd")
+    # a lone surrogate sorts as U+FFFD (EF BF BD), after U+E000 (EE 80 80)
+    assert canonicalize({"\ud800": 1, "a": 2, "": 3}) == '{"a":2,"":3,"\ud800":1}'
 
 
 def test_strict_number_error_negative_digit_count():
@@ -219,7 +222,7 @@ def test_ser_type_errors_exact():
 
 
 def test_canonical_bytes_lenient():
-    assert canonical_bytes({"a": "\ud800"}) == b'{"a":"\xed\xa0\x80"}'
+    assert canonical_bytes({"a": "\ud800"}) == b'{"a":"\xef\xbf\xbd"}'
     assert canonical_bytes(1) == b"1"
     assert canonical_bytes({"b": [True, None], "a": "é"}) == b'{"a":"\xc3\xa9","b":[true,null]}'
 
@@ -260,9 +263,10 @@ def test_fastapi_default_detail(monkeypatch):
             pass
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(fa.RequirePCA(audience="a", resolve_grant=lambda r: None)(Req()))
+        asyncio.run(fa.RequirePCA(audience="a", resolve_grant=lambda r: None, signature_only=True)(Req()))
     assert ei.value.status_code == 401
     assert ei.value.detail == "proof-carrying authority required"
+    assert ei.value.doc == "https://github.com/Atlas-Authorization/pca/blob/main/docs/reference/refusals.md"
     assert ei.value.headers is None
 
 

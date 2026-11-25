@@ -1,0 +1,67 @@
+name: Pairing packages
+
+# bbs, abe and aggsig on BLS12-381. Curve and pairing work is supranational blst through ctypes (atlas_pca.bls12); ABE's GT operations are a
+# small shim (native/pca_gt.c) over blst's public API, built here with the pinned blst source into one shared library that
+# exports both the blst entry points and the pca_gt_* ones.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BLST_TAG: v0.3.16
+  BLST_COMMIT: e7f90de551e8df682f3cc99067d204d8b90d27ad
+
+jobs:
+  pairing:
+    runs-on: ubuntu-latest
+    env:
+      PCA_PAIRING_REQUIRED: '1'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono python-pca
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Secret-key oracle corpora (generated, never committed)
+        shell: bash
+        run: .github/scripts/gen-secret-corpus.sh "$PCA_MONO_SDK/test-data" abe:abe
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest cryptography py_ecc
+      - name: blst at the pinned commit
+        run: |
+          git clone --quiet --depth 1 --branch "$BLST_TAG" https://github.com/supranational/blst "$RUNNER_TEMP/blst"
+          test "$(git -C "$RUNNER_TEMP/blst" rev-parse HEAD)" = "$BLST_COMMIT"
+      - name: Build libblst.so (blst + the GT shim, one shared library)
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: |
+          mkdir -p native/build
+          cc -O2 -fPIC -shared -D__BLST_PORTABLE__ -I"$RUNNER_TEMP/blst/bindings" \
+            -o native/build/libblst.so \
+            native/pca_gt.c "$RUNNER_TEMP/blst/src/server.c" "$RUNNER_TEMP/blst/build/assembly.S"
+          echo "PCA_BLST_LIB=$PWD/native/build/libblst.so" >> "$GITHUB_ENV"
+      - name: bbs (reference corpus, draft-irtf-cfrg-bbs-signatures fixtures)
+        if: ${{ !cancelled() }} # one run shows every failing step
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: python -m pytest -q test_ref_bbs.py test_bbs_kat.py
+      - name: abe (reference corpus, independent FAME vectors)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: python -m pytest -q test_ref_abe.py test_fame_pyecc.py
+      - name: aggsig (reference corpus, Ethereum BLS12-381 vectors, py_ecc cross-check)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: python -m pytest -q test_ref_aggsig.py test_aggsig_kat.py

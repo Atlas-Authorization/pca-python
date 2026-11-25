@@ -33,7 +33,7 @@ def test_plain_formats():
 
 
 def test_merkle_and_shape():
-    with pytest.raises(ValueError, match="^merkle_root: empty leaf set$"):
+    with pytest.raises(ValueError, match="^merkleRoot: empty leaf set$"):
         merkle_root([])
     assert [_split(n) for n in (2, 3, 4, 5, 8, 9)] == [1, 2, 2, 4, 4, 8]
     assert _path_shape(0, 1) == []
@@ -159,6 +159,7 @@ def test_response_header_names_and_403_pcactn():
     from django.test import RequestFactory
     from atlas_pca.django import PCAMiddleware
     settings.PCA_AUDIENCE = "zzz"
+    settings.PCA_SIGNATURE_ONLY = True  # the signature path, as _guard above (once only inherited from an earlier test)
     settings.PCA_RESOLVE_GRANT = _resolver
     settings.PCA_NOW = NOW
     resp = PCAMiddleware(lambda r: None)(RequestFactory().post("/x", HTTP_PCA_ACTION=_header_value(PCACTN)))
