@@ -1,0 +1,52 @@
+[
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "fn": "_inv",
+  "line": "return pow(x, _p - 2, _p)",
+  "occurrence": 1,
+  "lineno": 17,
+  "mutant": "_inv: return pow(_p - 2, _p)",
+  "reason": "The mutant ignores x and evaluates (p - 2) ** p with no modulus (p = 2^255 - 19): a result of about 2^263 bits, which no memory holds, so CPython's squaring loop runs until the per-mutant memory cap or the time limit on EVERY call. The original is one modular exponentiation (well under a millisecond) and passes the same tests. No assertion can run first: the very first call never returns."
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "fn": "_recover_x",
+  "line": "x = pow(x2, (_p + 3) // 8, _p)",
+  "occurrence": 1,
+  "lineno": 26,
+  "mutant": "_recover_x: x = pow(x2, (_p + 3) // 8, None)",
+  "reason": "For x2 == 1 the mutant returns 1, the original's value; every other x2 that reaches this line (2..p-1: x2 == 0 returned earlier) is raised to a power of at least 2^252 with no modulus, a result of more than 2^252 bits that no memory holds, so CPython's squaring loop runs until the per-mutant memory cap or the time limit. The original is one modular exponentiation (well under a millisecond) and passes the same tests; test_base_kill_agent3_first.py reaches the line first with x2 != 1 (recovering the base point), outside any deadline wrapper, so the run error is deterministic."
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "fn": "_recover_x",
+  "line": "x = pow(x2, (_p + 3) // 8, _p)",
+  "occurrence": 1,
+  "lineno": 26,
+  "mutant": "_recover_x: x = pow(x2, (_p + 3) // 8, )",
+  "reason": "For x2 == 1 the mutant returns 1, the original's value; every other x2 that reaches this line (2..p-1: x2 == 0 returned earlier) is raised to a power of at least 2^252 with no modulus, a result of more than 2^252 bits that no memory holds, so CPython's squaring loop runs until the per-mutant memory cap or the time limit. The original is one modular exponentiation (well under a millisecond) and passes the same tests; test_base_kill_agent3_first.py reaches the line first with x2 != 1 (recovering the base point), outside any deadline wrapper, so the run error is deterministic."
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "fn": "_recover_x",
+  "line": "x = pow(x2, (_p + 3) // 8, _p)",
+  "occurrence": 1,
+  "lineno": 26,
+  "mutant": "_recover_x: x = pow(x2, _p)",
+  "reason": "For x2 == 1 the mutant returns 1, the original's value; every other x2 that reaches this line (2..p-1: x2 == 0 returned earlier) is raised to the power p = 2^255 - 19 with no modulus, a result of more than 2^252 bits that no memory holds, so CPython's squaring loop runs until the per-mutant memory cap or the time limit. The original is one modular exponentiation (well under a millisecond) and passes the same tests; test_base_kill_agent3_first.py reaches the line first with x2 != 1 (recovering the base point), outside any deadline wrapper, so the run error is deterministic."
+ },
+ {
+  "crate": "python-pca",
+  "file": "atlas_pca/ed25519.py",
+  "fn": "_recover_x",
+  "line": "x = pow(x2, (_p + 3) // 8, _p)",
+  "occurrence": 1,
+  "lineno": 26,
+  "mutant": "_recover_x: x = pow((_p + 3) // 8, _p)",
+  "reason": "The mutant ignores x2 and evaluates ((p + 3) / 8) ** p with no modulus: a result of about 2^263 bits, which no memory holds, so CPython's squaring loop runs until the per-mutant memory cap or the time limit on EVERY call that reaches the line (every point decoding with x2 != 0). The original is one modular exponentiation and passes the same tests."
+ }
+]

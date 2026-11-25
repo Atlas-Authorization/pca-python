@@ -498,7 +498,7 @@ def test_budget_evaluation_cap():
     preds, ctx = _where_pred([MR] * 64)
     assert evaluate_predicates(preds, ctx)["allowed"] is True
     preds, ctx = _where_pred([MR] * 65)
-    assert evaluate_predicates(preds, ctx) == {"allowed": False, "reason": "no predicate permits r on /"}
+    assert evaluate_predicates(preds, ctx) == {"allowed": False, "reason": 'action.verb matches "r" not satisfied for r on /'}
     # a fresh document per call: the same 64 pass again
     preds, ctx = _where_pred([MR] * 64)
     assert evaluate_predicates(preds, ctx)["allowed"] is True

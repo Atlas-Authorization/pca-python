@@ -1,0 +1,69 @@
+name: MPC
+
+# atlas_pca.mpc*: the secure multi-party composition package (SPDZ online phase, Ed25519 base OT on libsodium, IKNP/KOS extension, the MASCOT
+# no-dealer offline phase, ML-KEM-768 KEM and hybrid OT, the network pure parts) replaying the TypeScript reference corpora. ML-KEM-768 comes from
+# OpenSSL >= 3.5 through ctypes, so the job runs on Debian trixie (OpenSSL 3.5); the KEM and hybrid transcripts must run there, not skip.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mpc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    container: debian:trixie
+    env:
+      PCA_MPC_REQUIRE_MLKEM: '1'
+    steps:
+      - name: System packages (python, libsodium, OpenSSL 3.5, git)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 python3-venv python3-pip libsodium-dev openssl libssl3t64 git ca-certificates
+          openssl version
+      - uses: actions/checkout@v4
+      - name: Python environment
+        run: |
+          python3 -m venv "$HOME/venv"
+          "$HOME/venv/bin/pip" install --upgrade pip
+          "$HOME/venv/bin/pip" install pytest cryptography "pysodium>=0.7.19,<0.8"
+      - name: Flagship checkout (the TypeScript oracle generators)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Secret-key oracle corpus (mpc-ot; generated, never committed)
+        shell: bash
+        run: .github/scripts/gen-secret-corpus.sh "$PWD/test-data" mpc-ot:mpc-ot
+      - name: MPC replay (deterministic layer, OT stack, network parts)
+        run: |
+          "$HOME/venv/bin/python" -c "from atlas_pca.mpc_libcrypto import mlkem_available; assert mlkem_available(), 'OpenSSL >= 3.5 required'"
+          "$HOME/venv/bin/python" -m pytest -q test_ref_mpc.py test_ref_mpc_ot.py test_ref_mpc_net.py
+      - name: Hybrid KEM (X25519 + ML-KEM-768 / -1024, X-Wing, FIPS 203 key checks; shared reference corpus, a missing file fails)
+        if: ${{ !cancelled() }}
+        run: |
+          test -s testdata/ref-kem.json.gz
+          "$HOME/venv/bin/python" -m pytest -q test_ref_kem.py
+      - name: "PQ quorum sets, proofs and rotation chains (ML-DSA and SLH-DSA on OpenSSL 3.5: every case must run)"
+        if: ${{ !cancelled() }}
+        run: |
+          test -s testdata/ref-pq-threshold-quorum.json.gz
+          "$HOME/venv/bin/python" -m pytest -q test_ref_pq_quorum.py
+      - name: Mutual-TLS mesh (loopback and refusals)
+        if: ${{ !cancelled() }}
+        run: |
+          "$HOME/venv/bin/python" -m pytest -q test_ref_mpc_mesh.py test_ref_mpc_pq.py
+      - name: Distributed protocol (dealer and no-dealer over loopback mutual TLS, refusals)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 100
+        run: |
+          "$HOME/venv/bin/python" -m pytest -q test_ref_mpc_protocol.py

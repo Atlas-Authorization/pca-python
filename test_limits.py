@@ -18,10 +18,10 @@ class Limits(unittest.TestCase):
         self.assertEqual(ARTIFACT_SIZE_REASON, "artifact exceeds size limit (max 524288 bytes)")
         pad = lambda n: "{}" + " " * (n - 2)
         for n in (MAX_ARTIFACT_BYTES - 1, MAX_ARTIFACT_BYTES):
-            v = verify_pcactn_core(pad(n), {}, now=0, audience="a")
+            v = verify_pcactn_core(pad(n), {}, now=0, audience="a", insecure_skip_plan_root_check=True)
             self.assertNotIn(ARTIFACT_SIZE_REASON, v.reason or "")
         t = time.perf_counter()
-        v = verify_pcactn_core("x" + pad(MAX_ARTIFACT_BYTES), {}, now=0, audience="a")  # garbage: the SIZE reason proves it precedes parsing
+        v = verify_pcactn_core("x" + pad(MAX_ARTIFACT_BYTES), {}, now=0, audience="a", insecure_skip_plan_root_check=True)  # garbage: the SIZE reason proves it precedes parsing
         self.assertFalse(v.allow)
         self.assertEqual(v.checks, {"wire": False})
         self.assertIn(ARTIFACT_SIZE_REASON, v.reason)

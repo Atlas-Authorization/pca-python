@@ -143,7 +143,7 @@ class Conformance(unittest.TestCase):
                 if isinstance(v.get("pcactn"), dict):
                     with self.subTest(v["name"] + " (unsupported_suite)"):
                         ctx = v["context"]
-                        got = verify_pcactn_core(v["pcactn"], v["grant"], now=ctx["now"], audience=ctx["aud"])
+                        got = verify_pcactn_core(v["pcactn"], v["grant"], now=ctx["now"], audience=ctx["aud"], insecure_skip_plan_root_check=True)
                         self.assertFalse(got.allow, got.reason)
                         self.assertIn("unsupported_suite", got.reason or "", got.reason)
                 continue
@@ -158,7 +158,7 @@ class Conformance(unittest.TestCase):
                     raw = v["pcactn_json"] if "pcactn_json" in v else v["pcactn"]
                     got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"],
                                              allowed_suites=ctx.get("allowed_suites"),
-                                             intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
+                                             intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx), insecure_skip_plan_root_check=True)
                     self.assertFalse(got.allow, got.reason)
                     # a vector that names its refusal (reason_contains: e.g. the session-root pin checks) reaches it
                     # before the suite work, on every host
@@ -173,7 +173,7 @@ class Conformance(unittest.TestCase):
                 # classes exactly when reported.
                 got = verify_pcactn_core(raw, v["grant"], now=ctx["now"], audience=ctx["aud"],
                                          allowed_suites=ctx.get("allowed_suites"),
-                                         intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx))
+                                         intent_policy=_intent_policy(ctx), intent_v2=_intent_v2(ctx), insecure_skip_plan_root_check=True)
                 self.assertEqual(got.allow, v["expect"]["allow"], got.reason)
                 self.assertEqual(got.checks, v["expect"]["checks"], got.reason)
                 if "reason_contains" in v["expect"]:
@@ -203,7 +203,7 @@ class Conformance(unittest.TestCase):
         vs = [v for v in DOC["vectors"] if v["name"].startswith("forge-smallorder-")]
         self.assertEqual(len(vs), 3)
         for v in vs:
-            got = verify_pcactn_core(v["pcactn"], v["grant"], now=v["context"]["now"], audience=v["context"]["aud"])
+            got = verify_pcactn_core(v["pcactn"], v["grant"], now=v["context"]["now"], audience=v["context"]["aud"], insecure_skip_plan_root_check=True)
             self.assertFalse(got.allow, v["name"])
 
     def test_threshold_shares(self):
@@ -527,7 +527,7 @@ class Conformance(unittest.TestCase):
                     elif m["api"] == "threshold_share":
                         self.assertIs(verify_threshold_share(i), False, m["name"])
                     elif m["api"] == "pcactn_json":
-                        v = verify_pcactn_core(i["text"], i["grant"], i["now"], i["aud"])
+                        v = verify_pcactn_core(i["text"], i["grant"], i["now"], i["aud"], insecure_skip_plan_root_check=True)
                         self.assertFalse(v.allow, m["name"])
                     else:
                         self.fail("unknown api " + m["api"])
@@ -550,7 +550,7 @@ class Conformance(unittest.TestCase):
                     elif e["api"] == "threshold_share":
                         got = verify_threshold_share(inp)
                     elif e["api"] == "pcactn_json":
-                        got = verify_pcactn_core(inp["text"], inp["grant"], inp["now"], inp["aud"]).allow
+                        got = verify_pcactn_core(inp["text"], inp["grant"], inp["now"], inp["aud"], insecure_skip_plan_root_check=True).allow
                     elif e["api"] == "json_parse":
                         try:
                             strict_parse(inp["text"])

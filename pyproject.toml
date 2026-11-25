@@ -1,7 +1,7 @@
 [project]
 name = "atlas-pca"
-version = "0.4.3"
-description = "Reference verifier for Atlas Proof-Carrying Authority (PCActn core, M0-M3)"
+version = "0.6.0"
+description = "Atlas Proof-Carrying Authority for Python: the reference verifier and the agent side (grants, delegation, signed actions)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -15,13 +15,26 @@ classifiers = [
   "Topic :: Security :: Cryptography",
 ]
 requires-python = ">=3.9"
-dependencies = []
+# ada-url: Ada (the parser Node uses) as a vetted binary wheel on every platform, for the non-ASCII hosts in CIBA, VC and the URL checks.
+# pysodium: the pure-Python libsodium binding of the ratchet, OPRF and FROST; the libsodium itself ships inside the platform wheels (atlas_pca/_native).
+# pyuca: pure-Python Unicode Collation Algorithm (DUCET), the ordering of guardian ids in atlas_pca.ha (the reference sorts with ICU root collation).
+dependencies = ["ada-url>=1.10", "pysodium>=0.7.19,<0.8", "pyuca>=1.2", "tzdata>=2024.1"]  # tzdata: the IANA zone data zoneinfo falls back to (Windows, minimal images, distributions without the legacy zone names)
 
 [project.optional-dependencies]
+ristretto = []  # kept for compatibility: pysodium is a core dependency and libsodium ships in the platform wheels (sdist / pure-wheel installs need a system libsodium >= 1.0.18)
 fast = ["cryptography>=41"]  # optional: native Ed25519; a pure-Python RFC 8032 verifier is the fallback
 pq = ["dilithium-py>=1.0"]   # B4 post-quantum: pure-Python ML-DSA-65/87 (FIPS 204). Without it ML-DSA, and always SLH-DSA (FIPS 205), use OpenSSL >= 3.5 libcrypto via ctypes when present (supported_suites() reports what this runtime can verify)
+attest = ["cryptography>=41"] # vendor hardware-attestation verifiers (atlas_pca.attest): AMD SEV-SNP, Intel TDX DCAP, Azure MAA, GCP Confidential Space, NVIDIA GPU SPDM
+sigstore = ["cryptography>=41"] # offline Sigstore bundle verification (atlas_pca.sigstore_bundle), a port: sigstore-python lacks Rekor v1 intoto 0.0.2
 fastapi = ["fastapi>=0.110"] # optional: FastAPI dependency (atlas_pca.fastapi); base stays dep-free
 django = ["django>=4.2"]     # optional: Django middleware (atlas_pca.django); base stays dep-free
+flask = ["flask>=2.3"]       # optional: Flask decorator / before_request hook (atlas_pca.flask); base stays dep-free
+yaml = ["ruamel.yaml>=0.18.6,<0.19"]  # authoring-file YAML loader (atlas_pca.actions_yaml_load): ruamel.yaml YAML 1.2 syntax layer; the YAML writer needs nothing
+aggsig = []                 # BLS12-381 aggregate signatures (atlas_pca.aggsig) run on libblst through ctypes (PCA_BLST_LIB); no Python dependency; signing needs an explicit opt-in
+zk = []                      # opt-in: Groth16 proof verification and proving (atlas_pca.zk) run on libpcazk through ctypes; the platform wheels carry it, otherwise set ATLAS_PCA_LIBPCAZK; no Python dependency
+fndsa = ["liboqs-python>=0.10"] # optional: FN-DSA verification backend (atlas_pca.fndsa) over liboqs; refuses cleanly without it
+idn = []                      # kept for compatibility: ada-url is a core dependency. Was: WHATWG domainToASCII (UTS 46) through Ada, the parser Node uses: byte parity for ciba ascii_form and vc request hosts; without it a stdlib approximation runs
+wasm = ["wasmtime>=30"]            # sandbox WebAssembly host (atlas_pca.sandbox_wasm): wasmtime-py with fuel, epoch deadline and a store memory cap; the component host needs a pinned wasmtime host binary instead
 
 [project.urls]
 Homepage = "https://github.com/Atlas-Authorization/pca-python"
@@ -35,3 +48,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["atlas_pca"]
+
+[tool.setuptools.package-data]
+atlas_pca = ["goal_ontologies.json", "goal_kernel_gen/*.py", "goal_kernel_gen/**/*.py", "_native/*"]  # the pinned goal ontologies (goal_ontologies.py) and the extracted goal kernel (goal_kernel.py), loaded at runtime
+
+[tool.pca]
+# Maturity tier: stable | production | experimental (the PCA maturity tiers page defines them)
+maturity = "stable"

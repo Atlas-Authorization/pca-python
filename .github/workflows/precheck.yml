@@ -1,0 +1,75 @@
+name: Precheck
+
+# Compile-only gate, byte-compile every file, import every test module (collection only) and every package module.
+# Runs only on pre/** pushes (and by hand): it builds and typechecks everything, tests included, and runs no test.
+# Push pre/<version> first and the full ci/** run only when this is green.
+on:
+  push:
+    branches: ['pre/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: compile and import everything (no test runs)
+    # the oldest interpreter and the runner image the main workflow pins for it
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full adversarial corpus from the flagship
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --layout --less
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: RSA DPoP oracle corpus (generated, never committed)
+        shell: bash
+        run: .github/scripts/dpop-rsa-corpus.sh "$PWD/test-data/ref-dpop-rsa.json.gz"
+      - name: Secret-key oracle corpora (generated, never committed)
+        shell: bash
+        run: .github/scripts/gen-secret-corpus.sh "$PWD/test-data" oprf:oprf core-frost-java:core-frost-java mpc-ot:mpc-ot attest-eat:attest-eat abe:abe frost-dkg:frost-dkg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: libsodium (ristretto255 backend of the ratchet and OPRF)
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+      - name: Install (package + optional backends + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[fast,pq,fastapi,django,flask,ristretto,yaml]" pytest pytest-xdist pytest-timeout httpx
+      # the oldest supported interpreter: a syntax error or a newer-only construct fails here
+      - name: Byte-compile every file (package, tests, examples, tools)
+        id: c0
+        continue-on-error: true
+        run: python -m compileall -q .
+      # collection imports every test module, so a bad import or a module-level name error fails; no test body runs
+      - name: Collect every test module (no test runs)
+        id: c1
+        continue-on-error: true
+        shell: bash
+        run: |
+          # same-named test modules live in several packages, so the root suite and each adapter are collected on their own,
+          # as the main workflow runs them; the adapters' real-framework suites need the frameworks installed and are only byte-compiled above
+          python -m pip install pytest-asyncio
+          rc=0
+          python -m pytest --collect-only -q -p no:cacheprovider --ignore=packages || rc=1
+          for d in packages/*/; do
+            ls "$d"test_*.py >/dev/null 2>&1 || continue
+            (cd "$d" && python -m pytest --collect-only -q -p no:cacheprovider --ignore-glob='test_real_*') || { echo "::error::$d failed"; rc=1; }
+          done
+          exit $rc
+      # every check above runs even when an earlier one failed; this step makes the job red when any did
+      - name: Summary
+        if: ${{ always() && (steps.c0.outcome == 'failure' || steps.c1.outcome == 'failure') }}
+        run: |
+          echo "::error::one or more compile checks failed; each failing step above has the details"
+          exit 1

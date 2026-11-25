@@ -1,0 +1,44 @@
+name: ZK (libpcazk)
+
+# atlas_pca.zk / zk_ceremony / zk_native: the zk compliance verifier and prover binding. The pairing check and the prover are libpcazk
+# (the flagship's Groth16 crate, arkworks, BN254 and BLS12-381), built here with cargo and loaded through ctypes: the 1429-case shared
+# reference corpus must replay in full, pairing cases included (a missing library fails, never skips).
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (the Groth16 crate from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono python-pca
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+      - run: pip install pytest cryptography "ada-url>=1.10" "pysodium>=0.7.19,<0.8"
+      - name: libpcazk (cargo build --features capi)
+        run: echo "ATLAS_PCA_LIBPCAZK=$(.github/scripts/build-libpcazk.sh "$RUNNER_TEMP/pcazk" "$RUNNER_TEMP/mono/packages/pca-zk/crate" | tail -1)/libpcazk.so" >> "$GITHUB_ENV"
+      - name: ZK replay (shared reference corpus; a missing file fails)
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        shell: bash
+        env:
+          ATLAS_PCA_LIBPCAZK_REQUIRED: '1'
+        run: |
+          test -s testdata/ref-zk.json.gz
+          python -m pytest -q -rs test_ref_zk.py | tee "$RUNNER_TEMP/zk.txt"
+          # with the library required, a skipped replay means pairing cases did not run
+          ! grep -q "not replayed\|libpcazk not available" "$RUNNER_TEMP/zk.txt"

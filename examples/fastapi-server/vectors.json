@@ -1,0 +1,63 @@
+{
+ "note": "Signed by the PCA reference implementation; a fixed clock is used so the proofs stay valid.",
+ "now": 1792929600000,
+ "audience": "payments-rs",
+ "grant": {
+  "id": "qL4c9Kg0rip6y6ZymwdC6E1RAcQ3EtBJ9PsLrDU6PmY",
+  "issuer": "bs9w31lShUG77IukzMDucQKxMxD5ihjCZS55bi-YuOQ",
+  "holder": "a1B3uxRS6gmgkh6UvfEZ1BVfZvylYa1g7rGNSac9kZM",
+  "caveats": [
+   {
+    "agent_binding": {},
+    "caveats": [],
+    "goal_commit": "1TK8Ori0BCcg4WKpWQGRG6s3zr2vtRbDOKVHZQ-Nd9I",
+    "predicates": [
+     {
+      "resource": "payments/*",
+      "verb": "payments.send",
+      "where": [
+       {
+        "field": "action.params.amount",
+        "op": "lte",
+        "value": 100
+       }
+      ]
+     }
+    ],
+    "risk_policy": {
+     "bMax": 1000,
+     "kappa": 1,
+     "lambda": 0,
+     "rho": 0,
+     "theta1": 0.5,
+     "theta2": 0.8,
+     "weights": {
+      "alpha": 0,
+      "beta": 0,
+      "delta": 0,
+      "epsilon": 0,
+      "gamma": 0,
+      "zeta": 0
+     }
+    },
+    "type": "envelope"
+   }
+  ],
+  "body_digest": "qL4c9Kg0rip6y6ZymwdC6E1RAcQ3EtBJ9PsLrDU6PmY",
+  "sig": "WKQI6v1LtVGKKZJiHKC8YGjRCPj01_wBRMs3OjTnWpYUqp6USYZE4lqa2202obhpUXJvMXtcOpTSn-NfFOuZBg"
+ },
+ "allow": {
+  "header": "eyJhY3Rpb24iOnsicGFyYW1zX2RpZ2VzdCI6InZuOFZyM0VkYXNZOXNTMDM2Z2Q1dU5BeEt0QVVkWXpoTWpVblNrb2Q5UWsiLCJyZXNvdXJjZSI6InBheW1lbnRzL2FjbWUiLCJyZXZlcnNpYmlsaXR5X2NsYXNzIjoiaXJyZXZlcnNpYmxlIiwidmVyYiI6InBheW1lbnRzLnNlbmQifSwiYXR0ZXN0YXRpb24iOnsiZXBvY2giOjAsIm1lYXN1cmVtZW50IjoiIiwibW9kZWxfaWQiOiJ1bmF0dGVzdGVkIiwib3BlcmF0b3IiOiJ1bmF0dGVzdGVkIiwicXVvdGVfZGlnZXN0IjoiIn0sImF1ZCI6InBheW1lbnRzLXJzIiwiY2FwX2NoYWluIjpbeyJib2R5X2RpZ2VzdCI6InFMNGM5S2cwcmlwNnk2Wnltd2RDNkUxUkFjUTNFdEJKOVBzTHJEVTZQbVkiLCJjYXZlYXRzIjpbeyJhZ2VudF9iaW5kaW5nIjp7fSwiY2F2ZWF0cyI6W10sImdvYWxfY29tbWl0IjoiMVRLOE9yaTBCQ2NnNFdLcFdRR1JHNnMzenIydnRSYkRPS1ZIWlEtTmQ5SSIsInByZWRpY2F0ZXMiOlt7InJlc291cmNlIjoicGF5bWVudHMvKiIsInZlcmIiOiJwYXltZW50cy5zZW5kIiwid2hlcmUiOlt7ImZpZWxkIjoiYWN0aW9uLnBhcmFtcy5hbW91bnQiLCJvcCI6Imx0ZSIsInZhbHVlIjoxMDB9XX1dLCJyaXNrX3BvbGljeSI6eyJiTWF4IjoxMDAwLCJrYXBwYSI6MSwibGFtYmRhIjowLCJyaG8iOjAsInRoZXRhMSI6MC41LCJ0aGV0YTIiOjAuOCwid2VpZ2h0cyI6eyJhbHBoYSI6MCwiYmV0YSI6MCwiZGVsdGEiOjAsImVwc2lsb24iOjAsImdhbW1hIjowLCJ6ZXRhIjowfX0sInR5cGUiOiJlbnZlbG9wZSJ9XSwiaG9sZGVyIjoiYTFCM3V4UlM2Z21na2g2VXZmRVoxQlZmWnZ5bFlhMWc3ckdOU2FjOWtaTSIsImlkIjoicUw0YzlLZzByaXA2eTZaeW13ZEM2RTFSQWNRM0V0Qko5UHNMckRVNlBtWSIsImlzc3VlciI6ImJzOXczMWxTaFVHNzdJdWt6TUR1Y1FLeE14RDVpaGpDWlM1NWJpLVl1T1EiLCJzaWciOiJXS1FJNnYxTHRWR0tLWkppSEtDOFlHalJDUGowMV93QlJNczNPalRuV3BZVXFwNlVTWVpFNGxxYTIyMDJvYmhwVVhKdk1YdGNPcFRTbi1OZkZPdVpCZyJ9XSwiY291bnRlciI6MSwiZXhwIjoxNzkyOTMwODAwMDAwLCJmcmVzaG5lc3MiOnsiYWNjdW11bGF0b3Jfd2l0bmVzcyI6IiIsImJlYWNvbl9yZWYiOiIiLCJlcG9jaCI6MH0sImdyYW50X3JlZiI6InFMNGM5S2cwcmlwNnk2Wnltd2RDNkUxUkFjUTNFdEJKOVBzTHJEVTZQbVkiLCJpYXQiOjE3OTI5Mjk2MDAwMDAsInBsYW4iOnsiY29uZGl0aW9uc19kaWdlc3QiOiJZTTg3RWdtbXZBcjRXWVFEbTF3a3JCN3BGb0hzNGVzaTh0T212OV9EVXhZIiwiaW5jbHVzaW9uX3Byb29mIjp7ImluZGV4IjowLCJwYXRoIjpbXSwic2l6ZSI6MX0sIm5vZGVfaWQiOiJuMSIsInJvb3QiOiJPb1RHa2E2N1pIMkZiRVZhX0gtazdWR29SVl9FbWhYTllDdE9yTjJ4Zl9RIn0sInByb3ZlbmFuY2UiOnsiY2F1c2FsX2hhc2giOiIiLCJ0YWludF9sZXZlbCI6MCwidHJ1c3RlZF9yZWZzIjpbXX0sInJpc2tfY2xhaW0iOnsiaW5wdXRzIjp7fSwiciI6MH0sInNpZyI6IjlqMHV6ZHBFMU0xdHB6ZzA1SWNTcHMwZ3R4a2IzZVA5ZUVoZmlwWk5ybVFNaEJhSkNfTDFmcVZTank3YlN3eVc1VHdGRkxhTGFxVEpWWjhic19YVUJBIiwidmVyIjoyfQ",
+  "body": {
+   "amount": 50,
+   "currency": "usd"
+  }
+ },
+ "refuse": {
+  "header": "eyJhY3Rpb24iOnsicGFyYW1zX2RpZ2VzdCI6Ii1qLUlGbVpuTVpETXlVUi00VFRJanlwVWpwVEZ2NEZxT2I1N2xHSDJKRVUiLCJyZXNvdXJjZSI6InBheW1lbnRzL2FjbWUiLCJyZXZlcnNpYmlsaXR5X2NsYXNzIjoiaXJyZXZlcnNpYmxlIiwidmVyYiI6InBheW1lbnRzLnNlbmQifSwiYXR0ZXN0YXRpb24iOnsiZXBvY2giOjAsIm1lYXN1cmVtZW50IjoiIiwibW9kZWxfaWQiOiJ1bmF0dGVzdGVkIiwib3BlcmF0b3IiOiJ1bmF0dGVzdGVkIiwicXVvdGVfZGlnZXN0IjoiIn0sImF1ZCI6InBheW1lbnRzLXJzIiwiY2FwX2NoYWluIjpbeyJib2R5X2RpZ2VzdCI6InFMNGM5S2cwcmlwNnk2Wnltd2RDNkUxUkFjUTNFdEJKOVBzTHJEVTZQbVkiLCJjYXZlYXRzIjpbeyJhZ2VudF9iaW5kaW5nIjp7fSwiY2F2ZWF0cyI6W10sImdvYWxfY29tbWl0IjoiMVRLOE9yaTBCQ2NnNFdLcFdRR1JHNnMzenIydnRSYkRPS1ZIWlEtTmQ5SSIsInByZWRpY2F0ZXMiOlt7InJlc291cmNlIjoicGF5bWVudHMvKiIsInZlcmIiOiJwYXltZW50cy5zZW5kIiwid2hlcmUiOlt7ImZpZWxkIjoiYWN0aW9uLnBhcmFtcy5hbW91bnQiLCJvcCI6Imx0ZSIsInZhbHVlIjoxMDB9XX1dLCJyaXNrX3BvbGljeSI6eyJiTWF4IjoxMDAwLCJrYXBwYSI6MSwibGFtYmRhIjowLCJyaG8iOjAsInRoZXRhMSI6MC41LCJ0aGV0YTIiOjAuOCwid2VpZ2h0cyI6eyJhbHBoYSI6MCwiYmV0YSI6MCwiZGVsdGEiOjAsImVwc2lsb24iOjAsImdhbW1hIjowLCJ6ZXRhIjowfX0sInR5cGUiOiJlbnZlbG9wZSJ9XSwiaG9sZGVyIjoiYTFCM3V4UlM2Z21na2g2VXZmRVoxQlZmWnZ5bFlhMWc3ckdOU2FjOWtaTSIsImlkIjoicUw0YzlLZzByaXA2eTZaeW13ZEM2RTFSQWNRM0V0Qko5UHNMckRVNlBtWSIsImlzc3VlciI6ImJzOXczMWxTaFVHNzdJdWt6TUR1Y1FLeE14RDVpaGpDWlM1NWJpLVl1T1EiLCJzaWciOiJXS1FJNnYxTHRWR0tLWkppSEtDOFlHalJDUGowMV93QlJNczNPalRuV3BZVXFwNlVTWVpFNGxxYTIyMDJvYmhwVVhKdk1YdGNPcFRTbi1OZkZPdVpCZyJ9XSwiY291bnRlciI6MSwiZXhwIjoxNzkyOTMwODAwMDAwLCJmcmVzaG5lc3MiOnsiYWNjdW11bGF0b3Jfd2l0bmVzcyI6IiIsImJlYWNvbl9yZWYiOiIiLCJlcG9jaCI6MH0sImdyYW50X3JlZiI6InFMNGM5S2cwcmlwNnk2Wnltd2RDNkUxUkFjUTNFdEJKOVBzTHJEVTZQbVkiLCJpYXQiOjE3OTI5Mjk2MDAwMDAsInBsYW4iOnsiY29uZGl0aW9uc19kaWdlc3QiOiJZTTg3RWdtbXZBcjRXWVFEbTF3a3JCN3BGb0hzNGVzaTh0T212OV9EVXhZIiwiaW5jbHVzaW9uX3Byb29mIjp7ImluZGV4IjowLCJwYXRoIjpbXSwic2l6ZSI6MX0sIm5vZGVfaWQiOiJuMSIsInJvb3QiOiJ3UTUzY0dvdG9sQmRLdTVYcjItRVo3VGhrR2VodFpET3FEbUVZd3NacUJnIn0sInByb3ZlbmFuY2UiOnsiY2F1c2FsX2hhc2giOiIiLCJ0YWludF9sZXZlbCI6MCwidHJ1c3RlZF9yZWZzIjpbXX0sInJpc2tfY2xhaW0iOnsiaW5wdXRzIjp7fSwiciI6MH0sInNpZyI6Ii1vQjhqMXFkLXMzSmFab0pscndnT1AweENaQWo0LTluUVVpTnQ4OXdkU3ZqZlAxRFNZNUV0MWxISDZ0Uk1aLUFUdzBQMXFLZmc0SXhrMm9rWkVhWkRRIiwidmVyIjoyfQ",
+  "body": {
+   "amount": 400,
+   "currency": "usd"
+  }
+ }
+}

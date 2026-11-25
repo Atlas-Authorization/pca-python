@@ -14,17 +14,19 @@ A result is carried only when the function is unchanged and the mutmut version i
 the same mutant names). Changes in OTHER functions are not followed, as in PIT; `full: true` runs everything.
 
   mutmut-carry.py fnhash                                     -> JSON {mutmut prefix | "<module>:<module>": sha256}
-  mutmut-carry.py select BASE_DIR SHARD_RE SUFFIX...         -> "FULL", or one mutmut name / glob per line (none = nothing
+  mutmut-carry.py names K/M                                  -> every mutant name of shard K of M (full run)
+  mutmut-carry.py select BASE_DIR K/M                        -> "FULL", or one mutmut name / glob per line (none = nothing
                                                                 to run: report the baseline with `carry-only`)
   mutmut-carry.py carry-only BASE_DIR                        -> counts.json, survivors.json ([]), results.json from BASE_DIR
 Library use: mutmut-survivors.py --carry (load_base, fnhash, changed_prefixes, carried_status).
 Run in the package root (atlas_pca/ is the mutated source, setup.cfg [mutmut] source_paths)."""
-import ast, glob, hashlib, json, os, re, sys
+import ast, glob, hashlib, json, os, re, sys, zlib
 from collections import Counter
 
 SRC = "atlas_pca"
-# statuses that are a kill: carried forward unless the function changed. Everything else is re-run.
-KILLED = {"killed", "timeout", "segfault", "caught by type check"}
+# statuses that are a kill: carried forward unless the function changed. Everything else is re-run, including a segfault
+# and a "run error" (mutmut-survivors.py: caught though no test decided it), so each run lists them afresh.
+KILLED = {"killed", "caught by type check"}  # a timeout is a run error, re-run like one (never carried as a kill)
 
 
 def _h(text):
@@ -60,6 +62,37 @@ def fnhash():
     return out
 
 
+# SHARD LAYOUT "hash-v1": mutant n of function f belongs to shard (crc32(f) + n) % M (0-based). The old layout (n % 50) put the
+# first mutant of every function in one shard: shard 6 of 50 ran 150-180 min, the median 80. A baseline made under another layout
+# (or M) is unusable (load_base): its shard k holds other mutants.
+LAYOUT = "hash-v1"
+
+
+def shard_of(name, m):
+    return (zlib.crc32(prefix_of(name).encode("utf-8")) + int(name.rsplit("__mutmut_", 1)[1])) % m
+
+
+class ShardSel:
+    """`.search(name)` like a compiled regex: is this mutant in shard k (0-based) of m?"""
+    def __init__(self, k, m):
+        self.k, self.m = k, m
+
+    def search(self, name):
+        return "__mutmut_" in name and shard_of(name, self.m) == self.k
+
+
+def all_names():
+    """Every mutant name of the generated mutants/ tree (mutmut's .meta files list them)."""
+    out = []
+    for f in glob.glob(os.path.join("mutants", "**", "*.meta"), recursive=True):
+        out.extend(json.load(open(f, encoding="utf-8")).get("exit_code_by_key", {}))
+    return out
+
+
+def layout_id():
+    return f"{LAYOUT}/{os.environ.get('PCA_SHARDS', '')}"
+
+
 def prefix_of(name):
     """atlas_pca.pca.x_verify__mutmut_12 -> atlas_pca.pca.x_verify"""
     return re.sub(r"__mutmut_\d+$", "", name)
@@ -85,6 +118,9 @@ def load_base(base):
     except (OSError, ValueError):
         return None
     from importlib.metadata import version
+    if meta.get("layout") != layout_id():
+        print(f"baseline shard layout {meta.get('layout')} != {layout_id()}: full run", file=sys.stderr)
+        return None
     if meta.get("mutmut") != version("mutmut"):
         print(f"baseline mutmut {meta.get('mutmut')} != {version('mutmut')}: full run", file=sys.stderr)
         return None
@@ -107,10 +143,15 @@ def main():
     if cmd == "fnhash":
         json.dump(fnhash(), sys.stdout, indent=0, sort_keys=True, ensure_ascii=False)
         return
+    if cmd == "names":  # names K/M: every mutant name of shard K of M (a full run)
+        k, m = (int(x) for x in args[0].split("/"))
+        print("\n".join(sorted(n for n in all_names() if ShardSel(k - 1, m).search(n))))
+        return
     base = args[0]
     state = load_base(base)
     if cmd == "select":
-        shard_re, suffixes = re.compile(args[1]), args[2:]
+        k, m = (int(x) for x in args[1].split("/"))
+        shard_re = ShardSel(k - 1, m)
         if state is None:
             print("FULL")
             return
@@ -123,8 +164,8 @@ def main():
             if shard_re.search(name) and st not in KILLED and prefix_of(name) in cur and prefix_of(name) not in changed:
                 out.append(name)
         print(f"targeted: {len(out)} earlier non-kill(s), {len(changed)} changed function(s)", file=sys.stderr)
-        for p in sorted(changed):
-            out.extend(f"{p}__mutmut_{s}" for s in suffixes)
+        # every mutant of a changed function that falls in this shard (the names mutmut generated, so none is guessed)
+        out.extend(sorted(n for n in all_names() if prefix_of(n) in changed and shard_re.search(n)))
         print("\n".join(out))
     elif cmd == "carry-only":
         # nothing to re-run in this shard: no earlier non-kill, no changed function. The baseline IS the result.
@@ -138,6 +179,7 @@ def main():
             sys.exit(f"carry-only but the baseline has {len(bad)} non-kill(s), e.g. {bad[0]}")
         json.dump(dict(Counter(res.values())), open("counts.json", "w"))
         json.dump([], open("survivors.json", "w"))
+        json.dump([], open("run-errors.json", "w"))  # a carried kill was decided by a test (run errors are re-run)
         json.dump(res, open("results.json", "w"), indent=0, sort_keys=True, ensure_ascii=False)
         print(f"carried {len(res)} result(s): {dict(Counter(res.values()))}")
     else:
