@@ -54,7 +54,7 @@ def fresh_state(monkeypatch):
 
 def test_tables():
     assert pq.KEY_TYPES == {"ML-DSA-65": (1952, 3309), "ML-DSA-87": (2592, 4627), "SLH-DSA-SHA2-128f": (32, 17088),
-                            "SLH-DSA-SHA2-256s": (64, 29792), "LESS-cat1": (97484, 1329)}
+                            "SLH-DSA-SHA2-256s": (64, 29792), "LESS-cat1": (97484, 1329), "FN-DSA-512": (897, 666), "FN-DSA-1024": (1793, 1280)}
     assert pq.LESS_SIGNATURE_MIN_BYTES == 1153 and pq.LESS_SIGNATURE_STEP_BYTES == 16
 
 

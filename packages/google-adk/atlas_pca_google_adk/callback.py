@@ -7,7 +7,7 @@ such a hook that verifies a proof-carrying action for each call and fails closed
 
 * no proof, or an undecodable one                        -> deny (the tool never runs)
 * a proof that does not verify under the core verifier   -> deny (bad signature / chain / validity /
-  wrong audience / unknown grant / replay counter)
+  wrong audience / unknown grant / malformed counter; the counter is format-checked, not replay-checked)
 * a valid proof whose authorized action does not satisfy the tool's required capability -> deny
 * otherwise                                              -> allow (return ``None``, the tool runs)
 
@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Union
 
 from ._proof import PCA_ARG, PCA_STATE_KEY, coerce_pcactn, current_proof, proof_from_tool_context
 from .tool import PcaToolDenied
-from .verifier import CoreVerifier, GrantResolver, ToolDecision, Verifier
+from .verifier import AuthorizeVerifier, CoreVerifier, GrantResolver, ToolDecision, Verifier, verify_call
 
 #: How each tool's required capability is chosen. See the module docstring.
 RequireSpec = Union[str, Mapping[str, str], Callable[[Any], Optional[str]]]
@@ -92,17 +92,39 @@ def pca_before_tool_callback(*, audience: str, require: RequireSpec,
                              resolve_grant: Optional[GrantResolver] = None,
                              verifier: Optional[Verifier] = None, now: Optional[int] = None,
                              raise_on_deny: bool = False, arg_name: str = PCA_ARG,
-                             state_key: str = PCA_STATE_KEY) -> BeforeToolCallback:
+                             state_key: str = PCA_STATE_KEY, authorize: Any = None,
+                             signature_only: bool = False,
+                             provenance: Optional[Callable[[Dict[str, Any]], Any]] = None,
+                             recorder: Any = None) -> BeforeToolCallback:
     """Build an ADK ``before_tool_callback`` that gates every tool on an agent with PCA.
 
     ``audience``       — this agent's RFC 8707 resource id; a proof for another audience is rejected.
     ``require``        — a :data:`RequireSpec` choosing each tool's capability (see the module docstring).
-    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required unless ``verifier`` is supplied.
-    ``verifier``       — a :class:`Verifier`; defaults to :class:`CoreVerifier` built from ``resolve_grant``.
-    ``now``            — epoch-ms validity clock (default: wall clock); used only for the default verifier.
+    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required.
+    ``verifier``       — a :class:`Verifier`; only with ``signature_only=True`` (it replaces the authorize pipeline).
+    ``now``            — epoch-ms validity clock (default: wall clock).
     ``raise_on_deny``  — raise :class:`PcaToolDenied` instead of returning a deny result dict.
     ``arg_name``       — the inline proof key in ``args`` (default ``"pca_action"``), stripped before the tool runs.
     ``state_key``      — the ``tool_context`` session-state key the proof travels under (default ``"PCA-Action"``).
+    ``authorize``      — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its fields:
+                         ``state_store``, ``is_revoked``, ...). The proof must then be for exactly this call (the
+                         tool's capability with the call arguments as params), and the grant's predicates and
+                         caveats, revocation and the replay counter are enforced before the tool runs. Needs
+                         ``resolve_grant`` (not ``verifier``). Put it on ONE gate per tool (the callback or
+                         ``pca_tool``): each consumes the replay counter.
+    ``signature_only`` — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                         only (no policy, replay or revocation). Cannot be combined with ``authorize``. Without
+                         ``authorize`` every call is refused (``authorize_config``).
+    ``provenance``     — provenance by default (authorize mode): ``(operation) -> bundle | None``, the provenance bundle for
+                         this call (the one your agent harness's recorder returned for it). Default: the bundle bound with
+                         ``pca_context(proof, provenance=...)``. It is forwarded to ``authorize``; pin the recording
+                         mediator in ``authorize.provenance_mediators``. Never synthesize a principal-direct bundle for a call
+                         the model chose: a sensitive call whose choice or arguments do not come from the principal escalates.
+    ``recorder``       — the agent session's ``atlas_pca.ProvenanceRecorder``: a call that presents no bundle gets
+                         ``recorder.for_action(operation)``. The tool's result is not visible to a
+                         ``before_tool_callback``: build both with :func:`pca_tool_callbacks` (or wire
+                         :func:`pca_after_tool_callback` with the same recorder), which records every result as UNTRUSTED
+                         tool output. A recorder with no after-callback built refuses every call (fail closed).
 
     Wire it in one line::
 
@@ -114,12 +136,22 @@ def pca_before_tool_callback(*, audience: str, require: RequireSpec,
                 audience="rs-orders",
                 require={"place_order": "write:db/orders"},
                 resolve_grant=resolve,
+                authorize=options,
             ),
         )
     """
     if not audience:
         raise ValueError("pca_before_tool_callback requires a non-empty `audience`")
-    if verifier is None:
+    if signature_only and authorize is not None:
+        raise ValueError("pca_before_tool_callback: signature_only and authorize are mutually exclusive")
+    if not signature_only:
+        if verifier is not None or resolve_grant is None:
+            raise ValueError("pca_before_tool_callback runs the full authorize pipeline by default and needs `resolve_grant=` (and no "
+                             "`verifier=`); pass `signature_only=True` to verify the signature only")
+        verifier = AuthorizeVerifier(resolve_grant, authorize if authorize is not None else {}, now=now,
+                                     provenance=provenance, recorder=recorder)
+        resolve_grant = None
+    elif verifier is None:
         if resolve_grant is None:
             raise ValueError("pca_before_tool_callback requires either `verifier=` or `resolve_grant=`")
         verifier = CoreVerifier(resolve_grant, now=now)
@@ -131,7 +163,16 @@ def pca_before_tool_callback(*, audience: str, require: RequireSpec,
                              tool_context: Any = None) -> Optional[Dict[str, Any]]:
         verb, resource = _split_require(_require_for(tool, require))
         pcactn = _read_proof(args, tool_context, arg_name=arg_name, state_key=state_key)
-        decision = the_verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
+        if recorder is not None and not getattr(recorder, _AFTER_WIRED, False):
+            # fail closed: without the after-callback no tool result is recorded, so injected output would look trusted
+            decision = ToolDecision(ok=False, pcactn=pcactn, required=None if verb is None else "%s:%s" % (verb, resource),
+                                    reason="provenance_flow: the recorder has no pca_after_tool_callback wired, so tool "
+                                           "results are not recorded (fail closed); use pca_tool_callbacks(...)")
+            if raise_on_deny:
+                raise PcaToolDenied(decision)
+            return _deny_result(decision)
+        decision = verify_call(the_verifier, pcactn, verb=verb, resource=resource, audience=audience,
+                               params=args if isinstance(args, dict) else None)
         if decision.ok:
             return None  # proceed: ADK runs the tool
         if raise_on_deny:
@@ -139,3 +180,40 @@ def pca_before_tool_callback(*, audience: str, require: RequireSpec,
         return _deny_result(decision)
 
     return before_tool_callback
+
+
+#: set on a recorder by :func:`pca_after_tool_callback`; a before-callback given a recorder without it refuses every call
+_AFTER_WIRED = "_atlas_pca_adk_after_tool_callback"
+
+
+def pca_after_tool_callback(recorder: Any) -> Callable[..., None]:
+    """Build an ADK ``after_tool_callback(tool, args, tool_context, tool_response)`` that records every tool's result in the
+    agent session's ``atlas_pca.ProvenanceRecorder`` as UNTRUSTED tool output (provenance by default). Pair it with
+    ``pca_before_tool_callback(..., recorder=recorder)``::
+
+        agent = LlmAgent(..., before_tool_callback=pca_before_tool_callback(..., recorder=recorder),
+                         after_tool_callback=pca_after_tool_callback(recorder))
+
+    It returns ``None``, so ADK keeps the tool's own result."""
+    if recorder is None:
+        raise ValueError("pca_after_tool_callback needs the agent session's ProvenanceRecorder")
+    setattr(recorder, _AFTER_WIRED, True)  # lets a pca_before_tool_callback with this recorder run (it refuses otherwise)
+
+    def after_tool_callback(tool: Any, args: Any = None, tool_context: Any = None, tool_response: Any = None) -> None:
+        recorder.tool(_tool_name(tool) or "tool", tool_response)
+        return None
+
+    return after_tool_callback
+
+
+def pca_tool_callbacks(*, recorder: Any, **kwargs: Any) -> "tuple[BeforeToolCallback, Callable[..., None]]":
+    """The way to use a provenance recorder with ADK callbacks: ``(before_tool_callback, after_tool_callback)`` sharing the
+    agent session's ``atlas_pca.ProvenanceRecorder``. ``kwargs`` are :func:`pca_before_tool_callback`'s. The before-callback
+    builds each call's bundle with the recorder; the after-callback records every tool result as UNTRUSTED tool output::
+
+        before, after = pca_tool_callbacks(audience="rs-orders", require={"place_order": "write:db/orders"},
+                                           resolve_grant=resolve, authorize=options, recorder=recorder)
+        agent = LlmAgent(..., before_tool_callback=before, after_tool_callback=after)
+    """
+    after = pca_after_tool_callback(recorder)
+    return pca_before_tool_callback(recorder=recorder, **kwargs), after

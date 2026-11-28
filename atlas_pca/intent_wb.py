@@ -24,6 +24,7 @@ JS semantics reproduced here (the reference runs on JSON.parse values):
     suite dispatch (`verify_leaf_suite`); a suite the dispatch does not implement is `unsupported_suite`, and a PQ / hybrid
     signature verifies only under the PQ key the verifier PINS for that signer (`_resolve_pq_key`).
 """
+from ._fin import fin
 import math
 import re
 from typing import Any, Dict, List, Optional
@@ -64,7 +65,7 @@ MAX_COMMITTED_CLASSES = 8
 MAX_CLASSIFIER_LABELS = 32
 
 INTENT_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")  # always fullmatch
-DATA_CLASS_RE = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*")  # always fullmatch
+DATA_CLASS_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z0-9_]+)*")  # always fullmatch
 PARAM_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # always fullmatch
 PROV_PATH_RE = re.compile(r"action\.params\.[A-Za-z0-9_]{1,64}")  # always fullmatch
 _FORBIDDEN_SEGMENTS = frozenset(("__proto__", "constructor", "prototype"))
@@ -91,7 +92,7 @@ def _is_safe_int(v: Any) -> bool:
     if isinstance(v, bool):
         return False
     if isinstance(v, float):
-        if not math.isfinite(v) or v != math.trunc(v) or (v == 0 and math.copysign(1.0, v) < 0):
+        if not fin(v) or v != math.trunc(v) or (v == 0 and math.copysign(1.0, v) < 0):
             return False
         return abs(v) <= MAX_SAFE
     return isinstance(v, int) and abs(v) <= MAX_SAFE
@@ -214,7 +215,7 @@ def _js_num_str(x: Any) -> str:
 
 def _js_str(v: Any) -> str:
     """ECMAScript String(v) for JSON values (template-literal interpolation in reasons)."""
-    if v is _UNDEF:
+    if v is _UNDEF or type(v) is object:  # any module's bare-object `undefined` marker
         return "undefined"
     if v is None:
         return "null"
@@ -234,7 +235,8 @@ def _js_str(v: Any) -> str:
 # ---- shared artifact plumbing (intent-artifacts.ts) --------------------------------------------------------------------
 
 def is_path_segment(s: Any) -> bool:
-    return isinstance(s, str) and PARAM_SEGMENT_RE.fullmatch(s) is not None and s not in _FORBIDDEN_SEGMENTS
+    """The segment test of the reference: the pattern is applied to ``String(s)`` (so 5 and null pass as "5" and "null"), the forbidden names to the value itself."""
+    return PARAM_SEGMENT_RE.fullmatch(_js_str(s)) is not None and not (isinstance(s, str) and s in _FORBIDDEN_SEGMENTS)
 
 
 def _is_bounded_string(v: Any, mx: int) -> bool:
@@ -540,7 +542,7 @@ def validate_offer_policy(p: Any) -> Optional[str]:
     kids = set()
     for k in sk:
         kid = _get(k, "kid")
-        if (not isinstance(k, dict) or _closed_members(k, ("kid", "pk"), ("pq_pk",), "site_key") is not None
+        if (not isinstance(k, dict) or _closed_members(k, ("kid", "pk"), ("pq_pk",)) is not None
                 or not _is_bounded_string(kid, 64) or not _is_digest(_get(k, "pk"))
                 or not pin_pq_ok(_get(k, "pq_pk")) or kid in kids):
             return "offers policy: every site key needs a unique kid, a 32-byte pk and an optional string pq_pk"
@@ -552,7 +554,7 @@ def validate_offer_policy(p: Any) -> Optional[str]:
     if not isinstance(op, str) or not op.startswith("action.params."):
         return "offers policy: offer_param must be an action.params.* path"
     f = _get(p, "filter")
-    if (not isinstance(f, dict) or _closed_members(f, ("query", "offer"), (), "filter") is not None
+    if (not isinstance(f, dict) or _closed_members(f, ("query", "offer")) is not None
             or not isinstance(_get(f, "query"), dict) or not isinstance(_get(f, "offer"), dict)):
         return "offers policy: filter must be exactly {query: {}, offer: {}}"
     for part in (f["query"], f["offer"]):
@@ -686,7 +688,7 @@ def validate_world_policy(p: Any) -> Optional[str]:
         kids = set()
         for o in ors:
             kid = _get(o, "kid")
-            if (not isinstance(o, dict) or _closed_members(o, ("kid", "pk"), ("pq_pk",), "oracle") is not None
+            if (not isinstance(o, dict) or _closed_members(o, ("kid", "pk"), ("pq_pk",)) is not None
                     or not _is_bounded_string(kid, 64) or not _is_digest(_get(o, "pk"))
                     or not pin_pq_ok(_get(o, "pq_pk")) or kid in kids):
                 return "world '%s': every oracle needs a unique kid, a 32-byte pk and an optional string pq_pk" % wn
@@ -1058,7 +1060,7 @@ def is_prov_path(k: Any) -> bool:
 
 def is_label_key(k: Any) -> bool:
     """label-receipts.ts `isLabelKey`: {site (1..256 B), kid (1..64 B), pk (digest), pq_pk? (non-empty string)}."""
-    return (isinstance(k, dict) and _closed_members(k, ("site", "kid", "pk"), ("pq_pk",), "label_key") is None
+    return (isinstance(k, dict) and _closed_members(k, ("site", "kid", "pk"), ("pq_pk",)) is None
             and _is_bounded_string(_get(k, "site"), 256) and _is_bounded_string(_get(k, "kid"), 64)
             and _is_digest(_get(k, "pk")) and pin_pq_ok(_get(k, "pq_pk")))
 
@@ -1335,7 +1337,7 @@ def validate_classifier_policy(p: Any) -> Optional[str]:
     ids = set()
     for c in p["classifiers"]:
         if (not isinstance(c, dict)
-                or _closed_members(c, ("id", "param", "labels", "keys", "k"), ("measurements", "pq_keys"), "classifier") is not None):
+                or _closed_members(c, ("id", "param", "labels", "keys", "k"), ("measurements", "pq_keys")) is not None):
             return "every classifier is exactly {id, param, labels, keys, k, measurements?, pq_keys?}"
         cid = _get(c, "id")
         if not isinstance(cid, str) or INTENT_NAME_RE.fullmatch(cid) is None or cid in ids:
@@ -1650,3 +1652,55 @@ def decide_intent_wb(input: Any) -> dict:
     except Exception as e:  # noqa: BLE001 - total
         # 45a1599e: the reference never throws either; any internal error is a `facts` failure (fail closed).
         return {"outcome": "deny", "checks": {"facts": "fail"}, "env": {}, "reason": "facts: evaluation error (fail closed): %s" % e}
+
+
+# ---- public names of the intent-artifacts helpers (the reference exports each) -------------------------------------------
+
+def is_plain_object(v: Any) -> bool:
+    """A JSON object that is not an array (native JSON has no prototypes)."""
+    return isinstance(v, dict)
+
+
+is_safe_int = _is_safe_int
+utf8_len = _utf8_len
+is_bounded_string = _is_bounded_string
+is_digest = _is_digest
+is_scalar = _is_scalar
+
+
+def closed_members(o: dict, required, optional=None, where=None) -> Optional[str]:
+    """The first unknown member of ``o``, else the first missing required one (worded ``unknown member 'where.k'``); None = closed and complete."""
+    return _closed_members(o, required, () if optional is None else optional, "object" if where is None else where)
+
+
+def set_nested(root: dict, path: str, value: Any) -> bool:
+    """Set ``root`` at the dotted path in place; False (and the root unchanged past the segments already created) when a segment would walk through a
+    scalar / array / null, the leaf exists, or a `__proto__` segment is walked; an assignment to `__proto__` itself creates no member."""
+    segs = path.split(".")
+    cur = root
+    for k in segs[:-1]:
+        if k == "__proto__":
+            return False
+        if k not in cur:
+            cur[k] = {}
+        nxt = cur[k]
+        if not isinstance(nxt, dict):
+            return False
+        cur = nxt
+    last = segs[-1]
+    if last == "__proto__":
+        return True
+    if last in cur:
+        return False
+    cur[last] = value
+    return True
+
+
+def own_get(o: Any, k: str) -> Any:
+    """The own member ``k`` of an object, else None."""
+    return o.get(k) if isinstance(o, dict) else None
+
+
+def null_record() -> dict:
+    """An empty record without an inherited member (a plain dict has none)."""
+    return {}

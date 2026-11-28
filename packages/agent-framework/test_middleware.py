@@ -72,7 +72,7 @@ class _Agent:
 
 def _mw(require=REQUIRE, *, audience=AUD, **kw):
     return pca_function_middleware(audience=audience, require=require, resolve_grant=resolver,
-                                   now=NOW, **kw)
+                                   now=NOW, **kw, signature_only=True)
 
 
 def _run(coro):
@@ -212,12 +212,12 @@ def test_returns_pca_function_middleware_instance():
 
 def test_requires_audience():
     with pytest.raises(ValueError):
-        pca_function_middleware(audience="", require=REQUIRE, resolve_grant=resolver)
+        pca_function_middleware(audience="", require=REQUIRE, resolve_grant=resolver, signature_only=True)
 
 
 def test_requires_verifier_or_resolver():
     with pytest.raises(ValueError):
-        pca_function_middleware(audience=AUD, require=REQUIRE)
+        pca_function_middleware(audience=AUD, require=REQUIRE, signature_only=True)
 
 
 def test_rejects_both_verifier_and_resolver():
@@ -226,7 +226,7 @@ def test_rejects_both_verifier_and_resolver():
             raise AssertionError("not called")
 
     with pytest.raises(ValueError):
-        pca_function_middleware(audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver)
+        pca_function_middleware(audience=AUD, require=REQUIRE, verifier=V(), resolve_grant=resolver, signature_only=True)
 
 
 def test_malformed_require_entry_raises_at_call_time():

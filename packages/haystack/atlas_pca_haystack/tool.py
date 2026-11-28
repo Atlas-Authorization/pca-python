@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from ._proof import PCA_ARG, ProofInput, coerce_pcactn, current_proof
-from .verifier import CoreVerifier, GrantResolver, ToolDecision, Verifier
+from .verifier import AuthorizeVerifier, CoreVerifier, GrantResolver, ToolDecision, Verifier, record_output, verify_call
 
 #: A tool's work function, or a guarded wrapper over it. Tool I/O is arbitrary by nature.
 ToolFn = Callable[..., Any]
@@ -158,28 +158,55 @@ def _build_haystack_tool(tool_cls: type, target: Any, meta: _Meta, guarded: Tool
 
 def pca_tool(require: str, *, audience: str, verifier: Optional[Verifier] = None,
              resolve_grant: Optional[GrantResolver] = None, now: Optional[int] = None,
-             arg_name: str = PCA_ARG) -> Callable[[Any], Any]:
+             arg_name: str = PCA_ARG, authorize: Any = None,
+             signature_only: bool = False, provenance: Optional[Callable[[Dict[str, Any]], Any]] = None,
+             recorder: Any = None) -> Callable[[Any], Any]:
     """Decorator making a Haystack tool require a valid proof-carrying action before it runs.
 
     ``require``        — the capability this tool demands, as ``"verb:resource"`` (e.g. ``"write:db/orders"``).
     ``audience``       — this resource server's own id; the proof's signed ``aud`` must equal it (RFC 8707).
-    ``verifier``       — a :class:`Verifier`; defaults to :class:`CoreVerifier` built from ``resolve_grant``.
-    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required when ``verifier`` is not supplied.
-    ``now``            — epoch-ms clock for the validity window (default: wall clock); used only for the default verifier.
+    ``verifier``       — a :class:`Verifier`; only with ``signature_only=True`` (it replaces the authorize pipeline).
+    ``resolve_grant``  — ``(grant_ref) -> grant | None``; required.
+    ``now``            — epoch-ms clock for the validity window (default: wall clock).
     ``arg_name``       — the ``invoke`` keyword that carries the proof inline (default ``"pca_action"``).
+    ``authorize``      — the full pipeline, the default (0.5): an ``atlas_pca.AuthorizeOptions`` (or a dict of its fields:
+                         ``state_store``, ``is_revoked``, ...). The proof must then be for exactly this call (the
+                         tool's capability with the keyword arguments as params), and the grant's predicates and
+                         caveats, revocation and the replay counter are enforced before the tool runs. Needs
+                         ``resolve_grant`` (not ``verifier``).
+    ``signature_only`` — explicit opt-in to verifying the signature, chain, audience, validity and counter format
+                         only (no policy, replay or revocation). Cannot be combined with ``authorize``. Without
+                         ``authorize`` every call is refused (``authorize_config``).
+    ``provenance``     — provenance by default (authorize mode): ``(operation) -> bundle | None``, the provenance bundle for
+                         this call (the one your agent harness's recorder returned for it). Default: the bundle bound with
+                         ``pca_context(proof, provenance=...)``. It is forwarded to ``authorize``; pin the recording
+                         mediator in ``authorize.provenance_mediators``. Never synthesize a principal-direct bundle for a call
+                         the model chose: a sensitive call whose choice or arguments do not come from the principal escalates.
+    ``recorder``       — the agent session's ``atlas_pca.ProvenanceRecorder``: a call that presents no bundle gets
+                         ``recorder.for_action(operation)``, and every result an allowed call returns is recorded in it as
+                         UNTRUSTED tool output.
 
     Usage::
 
         from haystack.tools import tool
         from atlas_pca_haystack import pca_tool
 
-        @pca_tool("write:db/orders", audience="rs-orders", resolve_grant=resolve)
+        @pca_tool("write:db/orders", audience="rs-orders", resolve_grant=resolve, authorize=options)
         @tool
         def place_order(sku: str, qty: int) -> str:
             ...
     """
     verb, resource = _parse_require(require)
-    if verifier is None:
+    if signature_only and authorize is not None:
+        raise ValueError("pca_tool: signature_only and authorize are mutually exclusive")
+    if not signature_only:
+        if verifier is not None or resolve_grant is None:
+            raise ValueError("pca_tool runs the full authorize pipeline by default and needs `resolve_grant=` (and no "
+                             "`verifier=`); pass `signature_only=True` to verify the signature only")
+        verifier = AuthorizeVerifier(resolve_grant, authorize if authorize is not None else {}, now=now,
+                                     provenance=provenance, recorder=recorder)
+        resolve_grant = None
+    elif verifier is None:
         if resolve_grant is None:
             raise ValueError("pca_tool requires either `verifier=` or `resolve_grant=`")
         verifier = CoreVerifier(resolve_grant, now=now)
@@ -190,20 +217,26 @@ def pca_tool(require: str, *, audience: str, verifier: Optional[Verifier] = None
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
             pcactn = _pop_proof(kwargs, arg_name)
-            decision = the_verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
+            decision = verify_call(the_verifier, pcactn, verb=verb, resource=resource, audience=audience,
+                                   params=None if args else kwargs)
             if not decision.ok:
                 raise PcaToolDenied(decision)
-            return meta.inner(*args, **kwargs)
+            out = meta.inner(*args, **kwargs)
+            record_output(the_verifier, verb, out)
+            return out
 
         guarded_async: Optional[ToolFn] = None
         inner_async = getattr(target, "async_function", None)
         if callable(inner_async):
             async def guarded_async_fn(*args: Any, **kwargs: Any) -> Any:
                 pcactn = _pop_proof(kwargs, arg_name)
-                decision = the_verifier.verify(pcactn, verb=verb, resource=resource, audience=audience)
+                decision = verify_call(the_verifier, pcactn, verb=verb, resource=resource, audience=audience,
+                                       params=None if args else kwargs)
                 if not decision.ok:
                     raise PcaToolDenied(decision)
-                return await inner_async(*args, **kwargs)
+                out = await inner_async(*args, **kwargs)
+                record_output(the_verifier, verb, out)
+                return out
 
             guarded_async = guarded_async_fn
 

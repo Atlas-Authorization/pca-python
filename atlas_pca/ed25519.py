@@ -83,6 +83,15 @@ def _acceptable_point(P):
     return P is not None and not _is_small_order(P) and _is_torsion_free(P)
 
 
+def is_safe_point_bytes(b):
+    """Canonical encoding, on the curve, not small order (so not the identity) and L*P = identity by the plain group law.
+    Independent of any libsodium build: 1.0.20 and older accept a mixed-order point through is_valid_point (X-only test of L*P)."""
+    if not isinstance(b, (bytes, bytearray)) or len(b) != 32:
+        return False
+    P = _decode(bytes(b))
+    return P is not None and _encode(P) == bytes(b) and _acceptable_point(P)
+
+
 def verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
     try:
         if len(pub) != 32 or len(sig) != 64:
@@ -92,12 +101,74 @@ def verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
             return False
         A = _decode(pub)
         R = _decode(sig[:32])
-        if not (_acceptable_point(A) and _acceptable_point(R)):
+        if A is None or R is None:
             return False
         h = int.from_bytes(hashlib.sha512(sig[:32] + pub + msg).digest(), "little") % _q
-        return _eq(_mul(s, _G), _add(R, _mul(h, A)))
+        # the cheap group equation first: a forged signature fails it and never pays for the torsion checks (all gates must still pass)
+        if not _eq(_mul(s, _G), _add(R, _mul(h, A))):
+            return False
+        return _acceptable_point(A) and _acceptable_point(R)
     except Exception:
         return False
+
+
+def _encode(P):
+    zi = _inv(P[2])
+    x, y = P[0] * zi % _p, P[1] * zi % _p
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _expand(seed):
+    h = hashlib.sha512(seed).digest()
+    return (int.from_bytes(h[:32], "little") & ((1 << 254) - 8)) | (1 << 254), h[32:]
+
+
+def public_key(seed: bytes) -> bytes:
+    """The Ed25519 public key of a 32-byte seed (RFC 8032). Pure Python, NOT constant time."""
+    if len(seed) != 32:
+        raise ValueError("an Ed25519 seed is 32 bytes")
+    return _encode(_mul(_expand(seed)[0], _G))
+
+
+def sign(seed: bytes, msg: bytes) -> bytes:
+    """RFC 8032 Ed25519 signature of `msg` under a 32-byte seed. Pure Python, NOT constant time: the reference signer. Held
+    keys sign through :func:`sign_secret`, which uses it only after an explicit opt-in."""
+    if len(seed) != 32:
+        raise ValueError("an Ed25519 seed is 32 bytes")
+    a, prefix = _expand(seed)
+    pub = _encode(_mul(a, _G))
+    r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % _q
+    R = _encode(_mul(r, _G))
+    h = int.from_bytes(hashlib.sha512(R + pub + msg).digest(), "little") % _q
+    return R + ((r + h * a) % _q).to_bytes(32, "little")
+
+
+# Signing with a held key: `cryptography` (constant time) when installed. Without it the pure signer above is used only after an
+# explicit opt-in, because its timing depends on the secret scalar.
+_ALLOW_INSECURE = False
+INSECURE_SIGNER_REFUSED = ("ed25519 signing needs the 'cryptography' package (pip install 'atlas-pca[fast]'): the built-in "
+                           "signer is not constant time; opt in with allow_insecure_signer only for tests or throwaway keys")
+
+
+def allow_insecure_signer(allow: bool = True) -> None:
+    """Process-wide opt-in to the built-in, NOT constant time, Ed25519 signer when ``cryptography`` is absent (tests,
+    throwaway keys). Off by default: signing then raises instead."""
+    global _ALLOW_INSECURE
+    _ALLOW_INSECURE = bool(allow)
+
+
+def sign_secret(seed: bytes, msg: bytes, allow_insecure: bool = False) -> bytes:
+    """Ed25519 signature for a key this process holds: ``cryptography`` when installed, else the pure signer only when
+    ``allow_insecure`` (or :func:`allow_insecure_signer`) opted in. Raises RuntimeError otherwise (fail closed)."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError:
+        if not (allow_insecure or _ALLOW_INSECURE):
+            raise RuntimeError(INSECURE_SIGNER_REFUSED) from None
+        return sign(seed, msg)
+    if len(seed) != 32:
+        raise ValueError("an Ed25519 seed is 32 bytes")
+    return Ed25519PrivateKey.from_private_bytes(bytes(seed)).sign(msg)
 
 
 BACKEND = "pure-python-strict"
